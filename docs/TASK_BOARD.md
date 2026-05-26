@@ -23,7 +23,7 @@
 | T007 | 生成后端实体、Mapper 和状态枚举 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T006 | 已根据 schema.sql 生成 8 张表对应 entity、Mapper 和状态枚举，并通过 mvn test、mvn -DskipTests package；未实现业务接口 |
 | T008 | 实现用户认证模块 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T007, T008-API | 已实现 register/login/me 认证接口，username 映射 user.account，密码 BCrypt 存入 password_hash，轻量 token 解析 Authorization；已通过 mvn test、mvn -DskipTests package |
 | T008-API | 补齐认证接口契约 | API 设计会话 | DONE | docs/04-API接口文档.md, docs/TASK_BOARD.md, sql/schema.sql, sql/data.sql | T005 | 已统一为 MVP 轻量真实登录，补齐 register/login/me 契约，username 映射 user.account，password_hash 已在数据库设计和 SQL 中同步 |
-| T009 | 实现拼单大厅查询和发起拼单 | 后端会话 | DOING | backend/, docs/TASK_BOARD.md | T008, T010 | 正在实现 /api/group-orders 拼单大厅查询和发起拼单 |
+| T009 | 实现拼单大厅查询和发起拼单 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T008, T010 | 已实现 GET/POST /api/group-orders，支持状态、类型、关键词筛选，创建时使用当前用户为 creator_id、默认 CREATED 并写入 order_status_log；已通过 mvn test、mvn -DskipTests package |
 | T010 | 全局契约对齐 | 主控会话 | DONE | docs/03-数据库设计.md, docs/04-API接口文档.md, sql/schema.sql, sql/data.sql, docs/CONTRACT_ALIGNMENT_REPORT.md | T008, T009 | 已对齐 API 路径、username/account 映射、pickup_location、增强表和中间件边界 |
 
 ## 使用规则
