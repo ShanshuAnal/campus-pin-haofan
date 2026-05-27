@@ -112,3 +112,7 @@
 - 多会话流程：[docs/CODEX_WORKFLOW.md](docs/CODEX_WORKFLOW.md)
 - 任务看板：[docs/TASK_BOARD.md](docs/TASK_BOARD.md)
 - 项目说明：[README.md](README.md)
+
+
+### git规则
+每个任务完成后，Codex 必须输出建议 commit message，但不得自动执行 git add、git commit、git push。提交由用户确认后执行。
