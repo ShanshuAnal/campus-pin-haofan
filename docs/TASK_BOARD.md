@@ -27,6 +27,7 @@
 | T010 | 全局契约对齐 | 主控会话 | DONE | docs/03-数据库设计.md, docs/04-API接口文档.md, sql/schema.sql, sql/data.sql, docs/CONTRACT_ALIGNMENT_REPORT.md | T008, T009 | 已对齐 API 路径、username/account 映射、pickup_location、增强表和中间件边界；后端拼单详情与加入拼单实现见 T010-BE |
 | T010-BE | 实现拼单详情与加入拼单 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T009 | 已实现 GET /api/group-orders/{orderId} 与 POST /api/group-orders/{orderId}/participants，详情返回参与者、餐品、金额进度和取餐状态；加入拼单会校验 CREATED、截止时间、重复加入、人数上限和餐品金额，并更新订单金额汇总；已通过 mvn test、mvn -DskipTests package |
 | T011 | 实现锁单与优惠分摊 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T010-BE | 已实现 POST /api/group-orders/{orderId}/lock，仅发起人可在 CREATED 状态锁单；锁单时基于 meal_item.subtotal_amount 重新汇总金额，按成员原始金额占比分摊优惠，尾差固定写入发起人 rounding_adjustment_amount，并更新 group_order 汇总、LOCKED 状态、locked_time 和 order_status_log；已通过 mvn test、mvn -DskipTests package |
+| T012 | 已实现后端模块测试与审查 | 测试会话 | DONE | backend/src/test/, docs/05-测试用例.md, docs/TASK_BOARD.md | T008, T009, T010-BE, T011 | 已补充认证、拼单大厅、发起拼单、详情、加入、锁单与优惠分摊 Service 单元测试；已记录付款接口未实现和大厅默认排序契约差异；已通过 mvn test |
 
 ## 使用规则
 
