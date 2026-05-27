@@ -3,10 +3,12 @@ package com.campus.pinhaofan.controller;
 import com.campus.pinhaofan.common.Result;
 import com.campus.pinhaofan.dto.CreateGroupOrderRequest;
 import com.campus.pinhaofan.dto.JoinGroupOrderRequest;
+import com.campus.pinhaofan.dto.LockGroupOrderRequest;
 import com.campus.pinhaofan.service.GroupOrderService;
 import com.campus.pinhaofan.vo.GroupOrderDetailVO;
 import com.campus.pinhaofan.vo.GroupOrderVO;
 import com.campus.pinhaofan.vo.JoinGroupOrderVO;
+import com.campus.pinhaofan.vo.LockGroupOrderVO;
 import com.campus.pinhaofan.vo.PageResultVO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -64,5 +66,13 @@ public class GroupOrderController {
             @PathVariable Long orderId,
             @Valid @RequestBody JoinGroupOrderRequest request) {
         return Result.success(groupOrderService.joinGroupOrder(authorization, orderId, request));
+    }
+
+    @PostMapping("/{orderId}/lock")
+    public Result<LockGroupOrderVO> lockGroupOrder(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable Long orderId,
+            @RequestBody(required = false) LockGroupOrderRequest request) {
+        return Result.success(groupOrderService.lockGroupOrder(authorization, orderId, request));
     }
 }

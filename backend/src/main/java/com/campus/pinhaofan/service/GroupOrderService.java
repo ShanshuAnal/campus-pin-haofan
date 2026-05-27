@@ -2,9 +2,11 @@ package com.campus.pinhaofan.service;
 
 import com.campus.pinhaofan.dto.CreateGroupOrderRequest;
 import com.campus.pinhaofan.dto.JoinGroupOrderRequest;
+import com.campus.pinhaofan.dto.LockGroupOrderRequest;
 import com.campus.pinhaofan.vo.GroupOrderDetailVO;
 import com.campus.pinhaofan.vo.GroupOrderVO;
 import com.campus.pinhaofan.vo.JoinGroupOrderVO;
+import com.campus.pinhaofan.vo.LockGroupOrderVO;
 import com.campus.pinhaofan.vo.PageResultVO;
 
 public interface GroupOrderService {
@@ -23,4 +25,6 @@ public interface GroupOrderService {
     GroupOrderDetailVO getGroupOrderDetail(String authorization, Long orderId);
 
     JoinGroupOrderVO joinGroupOrder(String authorization, Long orderId, JoinGroupOrderRequest request);
+
+    LockGroupOrderVO lockGroupOrder(String authorization, Long orderId, LockGroupOrderRequest request);
 }

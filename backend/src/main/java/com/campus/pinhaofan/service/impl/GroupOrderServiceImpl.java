@@ -7,6 +7,7 @@ import com.campus.pinhaofan.common.AuthTokenUtil;
 import com.campus.pinhaofan.common.DateTimeUtil;
 import com.campus.pinhaofan.dto.CreateGroupOrderRequest;
 import com.campus.pinhaofan.dto.JoinGroupOrderRequest;
+import com.campus.pinhaofan.dto.LockGroupOrderRequest;
 import com.campus.pinhaofan.entity.GroupOrder;
 import com.campus.pinhaofan.entity.MealItem;
 import com.campus.pinhaofan.entity.OrderParticipant;
@@ -27,6 +28,9 @@ import com.campus.pinhaofan.service.GroupOrderService;
 import com.campus.pinhaofan.vo.GroupOrderDetailVO;
 import com.campus.pinhaofan.vo.GroupOrderVO;
 import com.campus.pinhaofan.vo.JoinGroupOrderVO;
+import com.campus.pinhaofan.vo.LockAllocationVO;
+import com.campus.pinhaofan.vo.LockGroupOrderVO;
+import com.campus.pinhaofan.vo.LockedGroupOrderVO;
 import com.campus.pinhaofan.vo.MealItemVO;
 import com.campus.pinhaofan.vo.OrderAmountVO;
 import com.campus.pinhaofan.vo.PageResultVO;
@@ -58,6 +62,7 @@ public class GroupOrderServiceImpl implements GroupOrderService {
     private static final String DISABLED_STATUS = "DISABLED";
     private static final String TARGET_TYPE_GROUP_ORDER = "GROUP_ORDER";
     private static final String ACTION_TYPE_CREATE_ORDER = "CREATE_ORDER";
+    private static final String ACTION_TYPE_LOCK_ORDER = "LOCK_ORDER";
     private static final Set<String> ORDER_TYPES = Set.of("TAKEOUT", "CANTEEN", "MILK_TEA", "MIDNIGHT_SNACK");
 
     private final AuthTokenUtil authTokenUtil;
@@ -227,6 +232,105 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         );
     }
 
+    @Override
+    @Transactional
+    public LockGroupOrderVO lockGroupOrder(String authorization, Long orderId, LockGroupOrderRequest request) {
+        User currentUser = requireCurrentUser(authorization);
+        GroupOrder order = getExistingOrder(orderId);
+        validateLockOrder(order, currentUser.getId());
+
+        List<OrderParticipant> participants = orderParticipantMapper.selectList(
+                new LambdaQueryWrapper<OrderParticipant>()
+                        .eq(OrderParticipant::getGroupOrderId, orderId)
+                        .orderByAsc(OrderParticipant::getJoinTime)
+        );
+        if (participants.isEmpty()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "拼单没有参与者，不能锁单");
+        }
+
+        OrderParticipant creatorParticipant = participants.stream()
+                .filter(participant -> Objects.equals(participant.getUserId(), order.getCreatorId()))
+                .findFirst()
+                .orElseThrow(() -> new BusinessException(
+                        ResultCode.BAD_REQUEST.getCode(),
+                        "发起人需先加入拼单以承接尾差"
+                ));
+
+        List<MealItem> mealItems = mealItemMapper.selectList(
+                new LambdaQueryWrapper<MealItem>()
+                        .eq(MealItem::getGroupOrderId, orderId)
+        );
+        Map<Long, BigDecimal> originalAmountByParticipantId = mealItems.stream()
+                .collect(Collectors.groupingBy(
+                        MealItem::getParticipantId,
+                        Collectors.mapping(
+                                item -> amount(item.getSubtotalAmount()),
+                                Collectors.reducing(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP), BigDecimal::add)
+                        )
+                ));
+
+        BigDecimal originalTotalAmount = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        for (OrderParticipant participant : participants) {
+            BigDecimal originalAmount = amount(originalAmountByParticipantId.get(participant.getId()));
+            if (originalAmount.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "餐品金额必须大于 0");
+            }
+            participant.setOriginalAmount(originalAmount);
+            originalTotalAmount = originalTotalAmount.add(originalAmount).setScale(2, RoundingMode.HALF_UP);
+        }
+
+        BigDecimal actualDiscountAmount = calculateActualDiscountAmount(order, originalTotalAmount);
+        BigDecimal payableTotalAmount = originalTotalAmount.subtract(actualDiscountAmount)
+                .setScale(2, RoundingMode.HALF_UP);
+        BigDecimal allocatedPayableTotal = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+
+        for (OrderParticipant participant : participants) {
+            BigDecimal discountShareAmount = calculateDiscountShareAmount(
+                    participant.getOriginalAmount(),
+                    originalTotalAmount,
+                    actualDiscountAmount
+            );
+            BigDecimal payableAmount = participant.getOriginalAmount()
+                    .subtract(discountShareAmount)
+                    .setScale(2, RoundingMode.HALF_UP);
+
+            participant.setDiscountShareAmount(discountShareAmount);
+            participant.setPayableAmount(payableAmount);
+            participant.setRoundingAdjustmentAmount(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+            allocatedPayableTotal = allocatedPayableTotal.add(payableAmount).setScale(2, RoundingMode.HALF_UP);
+        }
+
+        BigDecimal roundingAdjustmentAmount = payableTotalAmount.subtract(allocatedPayableTotal)
+                .setScale(2, RoundingMode.HALF_UP);
+        if (roundingAdjustmentAmount.compareTo(BigDecimal.ZERO) != 0) {
+            creatorParticipant.setRoundingAdjustmentAmount(roundingAdjustmentAmount);
+            creatorParticipant.setPayableAmount(creatorParticipant.getPayableAmount()
+                    .add(roundingAdjustmentAmount)
+                    .setScale(2, RoundingMode.HALF_UP));
+        }
+
+        for (OrderParticipant participant : participants) {
+            orderParticipantMapper.updateById(participant);
+        }
+
+        LocalDateTime lockedTime = LocalDateTime.now();
+        order.setParticipantCount(participants.size());
+        order.setOriginalTotalAmount(originalTotalAmount);
+        order.setActualDiscountAmount(actualDiscountAmount);
+        order.setPayableTotalAmount(payableTotalAmount);
+        order.setRoundingAdjustmentAmount(roundingAdjustmentAmount);
+        order.setStatus(GroupOrderStatus.LOCKED.getValue());
+        order.setLockedTime(lockedTime);
+        groupOrderMapper.updateById(order);
+
+        insertLockStatusLog(order, currentUser.getId(), request == null ? null : request.getRemark());
+
+        return new LockGroupOrderVO(
+                toLockedGroupOrderVO(order),
+                participants.stream().map(this::toLockAllocationVO).toList()
+        );
+    }
+
     private GroupOrder getExistingOrder(Long orderId) {
         if (orderId == null || orderId <= 0) {
             throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "orderId 不合法");
@@ -324,6 +428,39 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         return order;
     }
 
+    private void validateLockOrder(GroupOrder order, Long userId) {
+        if (!Objects.equals(order.getCreatorId(), userId)) {
+            throw new BusinessException(ResultCode.FORBIDDEN.getCode(), "只有发起人可以锁单");
+        }
+        if (!GroupOrderStatus.CREATED.getValue().equals(order.getStatus())) {
+            throw new BusinessException(ResultCode.CONFLICT.getCode(), "当前状态不能锁单");
+        }
+    }
+
+    private BigDecimal calculateActualDiscountAmount(GroupOrder order, BigDecimal originalTotalAmount) {
+        BigDecimal discountThresholdAmount = order.getDiscountThresholdAmount();
+        BigDecimal discountAmount = amount(order.getDiscountAmount());
+        if (discountThresholdAmount == null || originalTotalAmount.compareTo(discountThresholdAmount) < 0) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        if (discountAmount.compareTo(originalTotalAmount) > 0) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "优惠金额不能大于原始总金额");
+        }
+        return discountAmount;
+    }
+
+    private BigDecimal calculateDiscountShareAmount(
+            BigDecimal participantOriginalAmount,
+            BigDecimal originalTotalAmount,
+            BigDecimal actualDiscountAmount) {
+        if (actualDiscountAmount.compareTo(BigDecimal.ZERO) <= 0) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        return actualDiscountAmount
+                .multiply(participantOriginalAmount)
+                .divide(originalTotalAmount, 2, RoundingMode.HALF_UP);
+    }
+
     private void validateCreateRequest(CreateGroupOrderRequest request) {
         if (normalize(request.getTitle()).isEmpty()) {
             throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "title 不能为空");
@@ -382,6 +519,19 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         orderStatusLogMapper.insert(log);
     }
 
+    private void insertLockStatusLog(GroupOrder order, Long operatorId, String remark) {
+        OrderStatusLog log = new OrderStatusLog();
+        log.setGroupOrderId(order.getId());
+        log.setOperatorId(operatorId);
+        log.setTargetType(TARGET_TYPE_GROUP_ORDER);
+        log.setTargetId(order.getId());
+        log.setActionType(ACTION_TYPE_LOCK_ORDER);
+        log.setBeforeStatus(GroupOrderStatus.CREATED.getValue());
+        log.setAfterStatus(GroupOrderStatus.LOCKED.getValue());
+        log.setRemark(normalize(remark).isEmpty() ? "锁定拼单并生成优惠分摊" : remark);
+        orderStatusLogMapper.insert(log);
+    }
+
     private Map<Long, User> loadUsers(List<GroupOrder> orders) {
         Set<Long> userIds = orders.stream()
                 .flatMap(order -> java.util.stream.Stream.of(order.getCreatorId(), order.getPickupUserId()))
@@ -416,6 +566,9 @@ public class GroupOrderServiceImpl implements GroupOrderService {
     }
 
     private GroupOrderVO toVO(GroupOrder order, Map<Long, User> users) {
+        UserSummaryVO pickupUser = order.getPickupUserId() == null
+                ? null
+                : toUserSummary(users.get(order.getPickupUserId()));
         return new GroupOrderVO(
                 order.getId(),
                 order.getTitle(),
@@ -433,7 +586,7 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                 order.getPayableTotalAmount(),
                 order.getRoundingAdjustmentAmount(),
                 order.getStatus(),
-                toUserSummary(users.get(order.getPickupUserId())),
+                pickupUser,
                 order.getRemark(),
                 DateTimeUtil.format(order.getLockedTime()),
                 DateTimeUtil.format(order.getFinishTime()),
@@ -492,6 +645,30 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                 DateTimeUtil.format(pickupRecord.getPickedUpTime()),
                 DateTimeUtil.format(pickupRecord.getDistributedTime()),
                 pickupRecord.getRemark()
+        );
+    }
+
+    private LockedGroupOrderVO toLockedGroupOrderVO(GroupOrder order) {
+        return new LockedGroupOrderVO(
+                order.getId(),
+                order.getStatus(),
+                amount(order.getOriginalTotalAmount()),
+                amount(order.getActualDiscountAmount()),
+                amount(order.getPayableTotalAmount()),
+                amount(order.getRoundingAdjustmentAmount()),
+                DateTimeUtil.format(order.getLockedTime())
+        );
+    }
+
+    private LockAllocationVO toLockAllocationVO(OrderParticipant participant) {
+        return new LockAllocationVO(
+                participant.getId(),
+                participant.getUserId(),
+                amount(participant.getOriginalAmount()),
+                amount(participant.getDiscountShareAmount()),
+                amount(participant.getPayableAmount()),
+                amount(participant.getRoundingAdjustmentAmount()),
+                participant.getPaymentStatus()
         );
     }
 

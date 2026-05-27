@@ -26,6 +26,7 @@
 | T009 | 实现拼单大厅查询和发起拼单 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T008, T010 | 已实现 GET/POST /api/group-orders，支持状态、类型、关键词筛选，创建时使用当前用户为 creator_id、默认 CREATED 并写入 order_status_log；已通过 mvn test、mvn -DskipTests package |
 | T010 | 全局契约对齐 | 主控会话 | DONE | docs/03-数据库设计.md, docs/04-API接口文档.md, sql/schema.sql, sql/data.sql, docs/CONTRACT_ALIGNMENT_REPORT.md | T008, T009 | 已对齐 API 路径、username/account 映射、pickup_location、增强表和中间件边界；后端拼单详情与加入拼单实现见 T010-BE |
 | T010-BE | 实现拼单详情与加入拼单 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T009 | 已实现 GET /api/group-orders/{orderId} 与 POST /api/group-orders/{orderId}/participants，详情返回参与者、餐品、金额进度和取餐状态；加入拼单会校验 CREATED、截止时间、重复加入、人数上限和餐品金额，并更新订单金额汇总；已通过 mvn test、mvn -DskipTests package |
+| T011 | 实现锁单与优惠分摊 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T010-BE | 已实现 POST /api/group-orders/{orderId}/lock，仅发起人可在 CREATED 状态锁单；锁单时基于 meal_item.subtotal_amount 重新汇总金额，按成员原始金额占比分摊优惠，尾差固定写入发起人 rounding_adjustment_amount，并更新 group_order 汇总、LOCKED 状态、locked_time 和 order_status_log；已通过 mvn test、mvn -DskipTests package |
 
 ## 使用规则
 
