@@ -24,7 +24,8 @@
 | T008 | 实现用户认证模块 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T007, T008-API | 已实现 register/login/me 认证接口，username 映射 user.account，密码 BCrypt 存入 password_hash，轻量 token 解析 Authorization；已通过 mvn test、mvn -DskipTests package |
 | T008-API | 补齐认证接口契约 | API 设计会话 | DONE | docs/04-API接口文档.md, docs/TASK_BOARD.md, sql/schema.sql, sql/data.sql | T005 | 已统一为 MVP 轻量真实登录，补齐 register/login/me 契约，username 映射 user.account，password_hash 已在数据库设计和 SQL 中同步 |
 | T009 | 实现拼单大厅查询和发起拼单 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T008, T010 | 已实现 GET/POST /api/group-orders，支持状态、类型、关键词筛选，创建时使用当前用户为 creator_id、默认 CREATED 并写入 order_status_log；已通过 mvn test、mvn -DskipTests package |
-| T010 | 全局契约对齐 | 主控会话 | DONE | docs/03-数据库设计.md, docs/04-API接口文档.md, sql/schema.sql, sql/data.sql, docs/CONTRACT_ALIGNMENT_REPORT.md | T008, T009 | 已对齐 API 路径、username/account 映射、pickup_location、增强表和中间件边界 |
+| T010 | 全局契约对齐 | 主控会话 | DONE | docs/03-数据库设计.md, docs/04-API接口文档.md, sql/schema.sql, sql/data.sql, docs/CONTRACT_ALIGNMENT_REPORT.md | T008, T009 | 已对齐 API 路径、username/account 映射、pickup_location、增强表和中间件边界；后端拼单详情与加入拼单实现见 T010-BE |
+| T010-BE | 实现拼单详情与加入拼单 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T009 | 已实现 GET /api/group-orders/{orderId} 与 POST /api/group-orders/{orderId}/participants，详情返回参与者、餐品、金额进度和取餐状态；加入拼单会校验 CREATED、截止时间、重复加入、人数上限和餐品金额，并更新订单金额汇总；已通过 mvn test、mvn -DskipTests package |
 
 ## 使用规则
 

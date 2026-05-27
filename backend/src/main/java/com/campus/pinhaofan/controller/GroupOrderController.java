@@ -2,12 +2,16 @@ package com.campus.pinhaofan.controller;
 
 import com.campus.pinhaofan.common.Result;
 import com.campus.pinhaofan.dto.CreateGroupOrderRequest;
+import com.campus.pinhaofan.dto.JoinGroupOrderRequest;
 import com.campus.pinhaofan.service.GroupOrderService;
+import com.campus.pinhaofan.vo.GroupOrderDetailVO;
 import com.campus.pinhaofan.vo.GroupOrderVO;
+import com.campus.pinhaofan.vo.JoinGroupOrderVO;
 import com.campus.pinhaofan.vo.PageResultVO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -45,5 +49,20 @@ public class GroupOrderController {
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @Valid @RequestBody CreateGroupOrderRequest request) {
         return Result.success(groupOrderService.createGroupOrder(authorization, request));
+    }
+
+    @GetMapping("/{orderId}")
+    public Result<GroupOrderDetailVO> getGroupOrderDetail(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable Long orderId) {
+        return Result.success(groupOrderService.getGroupOrderDetail(authorization, orderId));
+    }
+
+    @PostMapping("/{orderId}/participants")
+    public Result<JoinGroupOrderVO> joinGroupOrder(
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @PathVariable Long orderId,
+            @Valid @RequestBody JoinGroupOrderRequest request) {
+        return Result.success(groupOrderService.joinGroupOrder(authorization, orderId, request));
     }
 }
