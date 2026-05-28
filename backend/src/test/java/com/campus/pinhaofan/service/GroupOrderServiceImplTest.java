@@ -1034,6 +1034,91 @@ class GroupOrderServiceImplTest {
     }
 
     @Test
+    void listMyGroupOrdersReturnsCreatedByMeOrders() {
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        GroupOrder order = baseOrder();
+        order.setCreatorId(CREATOR_ID);
+        order.setStatus(GroupOrderStatus.CREATED.getValue());
+        order.setCreateTime(LocalDateTime.of(2026, 5, 28, 13, 0));
+
+        Page<GroupOrder> page = Page.of(1, 10);
+        page.setRecords(List.of(order));
+        page.setTotal(1);
+
+        when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
+        when(orderParticipantMapper.selectList(any())).thenReturn(List.of());
+        when(groupOrderMapper.selectPage(any(), any())).thenReturn(page);
+        when(userMapper.selectBatchIds(anyCollection())).thenReturn(List.of(creator));
+        when(pickupRecordMapper.selectList(any())).thenReturn(List.of());
+
+        PageResultVO<MyGroupOrderVO> result = groupOrderService.listMyGroupOrders(
+                authorization(CREATOR_ID),
+                "CREATED_BY_ME",
+                null,
+                null,
+                null
+        );
+
+        assertThat(result.getTotal()).isEqualTo(1);
+        assertThat(result.getRecords()).hasSize(1);
+        assertThat(result.getRecords().getFirst().getOrder().getId()).isEqualTo(ORDER_ID);
+        assertThat(result.getRecords().getFirst().getOrder().getCreator().getId()).isEqualTo(CREATOR_ID);
+        assertThat(result.getRecords().getFirst().getMyRole()).isEqualTo("CREATOR");
+        assertThat(result.getRecords().getFirst().getMyParticipantId()).isNull();
+        assertThat(result.getRecords().getFirst().getMyPaymentStatus()).isNull();
+
+        ArgumentCaptor<LambdaQueryWrapper<GroupOrder>> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(groupOrderMapper).selectPage(any(), wrapperCaptor.capture());
+        assertThat(wrapperCaptor.getValue().getCustomSqlSegment())
+                .contains("creator_id")
+                .doesNotContain("pickup_user_id");
+    }
+
+    @Test
+    void listMyGroupOrdersReturnsJoinedByMeOrders() {
+        User member = user(MEMBER_ID, "20260002", "小林");
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        OrderParticipant participant = participant(3002L, MEMBER_ID, "18.76");
+        participant.setPaymentStatus(PaymentStatus.PAID.getValue());
+
+        GroupOrder order = baseOrder();
+        order.setCreatorId(CREATOR_ID);
+        order.setStatus(GroupOrderStatus.LOCKED.getValue());
+        order.setCreateTime(LocalDateTime.of(2026, 5, 28, 12, 30));
+
+        Page<GroupOrder> page = Page.of(1, 10);
+        page.setRecords(List.of(order));
+        page.setTotal(1);
+
+        when(userMapper.selectById(MEMBER_ID)).thenReturn(member);
+        when(orderParticipantMapper.selectList(any())).thenReturn(List.of(participant));
+        when(groupOrderMapper.selectPage(any(), any())).thenReturn(page);
+        when(userMapper.selectBatchIds(anyCollection())).thenReturn(List.of(creator));
+        when(pickupRecordMapper.selectList(any())).thenReturn(List.of());
+
+        PageResultVO<MyGroupOrderVO> result = groupOrderService.listMyGroupOrders(
+                authorization(MEMBER_ID),
+                "JOINED_BY_ME",
+                null,
+                null,
+                null
+        );
+
+        assertThat(result.getTotal()).isEqualTo(1);
+        assertThat(result.getRecords()).hasSize(1);
+        assertThat(result.getRecords().getFirst().getMyRole()).isEqualTo("PARTICIPANT");
+        assertThat(result.getRecords().getFirst().getMyParticipantId()).isEqualTo(3002L);
+        assertThat(result.getRecords().getFirst().getMyPaymentStatus()).isEqualTo("PAID");
+        assertThat(result.getRecords().getFirst().getMyPayableAmount()).isEqualByComparingTo("18.76");
+
+        ArgumentCaptor<LambdaQueryWrapper<GroupOrder>> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(groupOrderMapper).selectPage(any(), wrapperCaptor.capture());
+        assertThat(wrapperCaptor.getValue().getCustomSqlSegment())
+                .contains("id IN")
+                .doesNotContain("creator_id");
+    }
+
+    @Test
     void listMyGroupOrdersReturnsPendingPaymentOrdersForCurrentUser() {
         User member = user(MEMBER_ID, "20260002", "小林");
         User creator = user(CREATOR_ID, "20260001", "小何");
@@ -1069,6 +1154,101 @@ class GroupOrderServiceImplTest {
         assertThat(result.getRecords().getFirst().getMyParticipantId()).isEqualTo(3002L);
         assertThat(result.getRecords().getFirst().getMyPaymentStatus()).isEqualTo("UNPAID");
         assertThat(result.getRecords().getFirst().getMyPayableAmount()).isEqualByComparingTo("18.76");
+
+        ArgumentCaptor<LambdaQueryWrapper<GroupOrder>> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(groupOrderMapper).selectPage(any(), wrapperCaptor.capture());
+        assertThat(wrapperCaptor.getValue().getCustomSqlSegment())
+                .contains("id IN")
+                .contains("status NOT IN");
+    }
+
+    @Test
+    void listMyGroupOrdersReturnsHistoryOrdersForCurrentUser() {
+        User member = user(MEMBER_ID, "20260002", "小林");
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        OrderParticipant finishedParticipant = participant(3002L, MEMBER_ID, "18.76");
+        finishedParticipant.setGroupOrderId(2001L);
+        finishedParticipant.setPaymentStatus(PaymentStatus.CONFIRMED.getValue());
+        OrderParticipant cancelledParticipant = participant(3003L, MEMBER_ID, "22.00");
+        cancelledParticipant.setGroupOrderId(2002L);
+
+        GroupOrder finished = baseOrder();
+        finished.setId(2001L);
+        finished.setCreatorId(CREATOR_ID);
+        finished.setStatus(GroupOrderStatus.FINISHED.getValue());
+        finished.setCreateTime(LocalDateTime.of(2026, 5, 27, 18, 0));
+        GroupOrder cancelled = baseOrder();
+        cancelled.setId(2002L);
+        cancelled.setCreatorId(CREATOR_ID);
+        cancelled.setStatus(GroupOrderStatus.CANCELLED.getValue());
+        cancelled.setCreateTime(LocalDateTime.of(2026, 5, 26, 18, 0));
+
+        Page<GroupOrder> page = Page.of(1, 10);
+        page.setRecords(List.of(finished, cancelled));
+        page.setTotal(2);
+
+        when(userMapper.selectById(MEMBER_ID)).thenReturn(member);
+        when(orderParticipantMapper.selectList(any())).thenReturn(List.of(finishedParticipant, cancelledParticipant));
+        when(groupOrderMapper.selectPage(any(), any())).thenReturn(page);
+        when(userMapper.selectBatchIds(anyCollection())).thenReturn(List.of(creator));
+        when(pickupRecordMapper.selectList(any())).thenReturn(List.of());
+
+        PageResultVO<MyGroupOrderVO> result = groupOrderService.listMyGroupOrders(
+                authorization(MEMBER_ID),
+                "HISTORY",
+                null,
+                null,
+                null
+        );
+
+        assertThat(result.getTotal()).isEqualTo(2);
+        assertThat(result.getRecords()).extracting(record -> record.getOrder().getStatus())
+                .containsExactly("FINISHED", "CANCELLED");
+        assertThat(result.getRecords()).extracting(MyGroupOrderVO::getMyRole)
+                .containsExactly("PARTICIPANT", "PARTICIPANT");
+        assertThat(result.getRecords().getFirst().getMyPaymentStatus()).isEqualTo("CONFIRMED");
+
+        ArgumentCaptor<LambdaQueryWrapper<GroupOrder>> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(groupOrderMapper).selectPage(any(), wrapperCaptor.capture());
+        assertThat(wrapperCaptor.getValue().getCustomSqlSegment())
+                .contains("creator_id")
+                .contains("pickup_user_id")
+                .contains("id IN")
+                .contains("status IN");
+    }
+
+    @Test
+    void listMyGroupOrdersWithoutScopeLimitsQueryToCurrentUserRelatedOrders() {
+        User member = user(MEMBER_ID, "20260002", "小林");
+        OrderParticipant participant = participant(3002L, MEMBER_ID, "18.76");
+        participant.setGroupOrderId(2002L);
+
+        Page<GroupOrder> page = Page.of(1, 10);
+        page.setRecords(List.of());
+        page.setTotal(0);
+
+        when(userMapper.selectById(MEMBER_ID)).thenReturn(member);
+        when(orderParticipantMapper.selectList(any())).thenReturn(List.of(participant));
+        when(groupOrderMapper.selectPage(any(), any())).thenReturn(page);
+
+        PageResultVO<MyGroupOrderVO> result = groupOrderService.listMyGroupOrders(
+                authorization(MEMBER_ID),
+                null,
+                null,
+                1L,
+                10L
+        );
+
+        assertThat(result.getTotal()).isZero();
+        assertThat(result.getRecords()).isEmpty();
+
+        ArgumentCaptor<LambdaQueryWrapper<GroupOrder>> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(groupOrderMapper).selectPage(any(), wrapperCaptor.capture());
+        assertThat(wrapperCaptor.getValue().getCustomSqlSegment())
+                .contains("creator_id")
+                .contains("pickup_user_id")
+                .contains("id IN")
+                .contains("ORDER BY create_time DESC");
     }
 
     @Test
@@ -1151,6 +1331,14 @@ class GroupOrderServiceImplTest {
         assertThat(result.getPopularTypes().getFirst().getName()).isEqualTo("MILK_TEA");
         assertThat(result.getPopularTypes().getFirst().getCount()).isEqualTo(2);
         assertThat(result.getPopularMerchants().getFirst().getName()).isEqualTo("一号门奶茶");
+
+        ArgumentCaptor<LambdaQueryWrapper<GroupOrder>> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(groupOrderMapper).selectList(wrapperCaptor.capture());
+        assertThat(wrapperCaptor.getValue().getCustomSqlSegment())
+                .contains("creator_id")
+                .contains("pickup_user_id")
+                .contains("id IN")
+                .contains("ORDER BY create_time DESC");
     }
 
     private String authorization(Long userId) {

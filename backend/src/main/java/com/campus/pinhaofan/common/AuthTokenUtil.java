@@ -2,6 +2,7 @@ package com.campus.pinhaofan.common;
 
 import com.campus.pinhaofan.enums.ResultCode;
 import com.campus.pinhaofan.exception.BusinessException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -20,12 +21,22 @@ public class AuthTokenUtil {
 
     private final String secret;
     private final long expireSeconds;
+    private final AccessTokenBlacklist accessTokenBlacklist;
 
+    @Autowired
     public AuthTokenUtil(
             @Value("${auth.token.secret}") String secret,
-            @Value("${auth.token.expire-hours}") long expireHours) {
+            @Value("${auth.token.expire-hours}") long expireHours,
+            AccessTokenBlacklist accessTokenBlacklist) {
         this.secret = secret;
         this.expireSeconds = expireHours * 3600;
+        this.accessTokenBlacklist = accessTokenBlacklist;
+    }
+
+    public AuthTokenUtil(String secret, long expireHours) {
+        this.secret = secret;
+        this.expireSeconds = expireHours * 3600;
+        this.accessTokenBlacklist = null;
     }
 
     public String createToken(Long userId) {
@@ -35,26 +46,68 @@ public class AuthTokenUtil {
     }
 
     public Long parseUserIdFromAuthorization(String authorization) {
-        if (authorization == null || !authorization.startsWith(TOKEN_PREFIX)) {
-            throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "未登录");
+        String token = extractBearerToken(authorization);
+        if (accessTokenBlacklist != null && accessTokenBlacklist.contains(token)) {
+            throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "登录已失效");
         }
-        return parseUserId(authorization.substring(TOKEN_PREFIX.length()).trim());
+        return parseUserId(token);
     }
 
     public Long parseUserId(String token) {
+        validateTokenFormat(token);
+        String[] payload = decodePayload(token);
+        validateExpiresAt(payload[1]);
+        try {
+            return Long.valueOf(payload[0]);
+        } catch (NumberFormatException exception) {
+            throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "登录已失效");
+        }
+    }
+
+    public long parseExpiresAt(String token) {
+        validateTokenFormat(token);
+        String[] payload = decodePayload(token);
+        return validateExpiresAt(payload[1]);
+    }
+
+    public long getExpireSeconds() {
+        return expireSeconds;
+    }
+
+    public String extractBearerToken(String authorization) {
+        if (authorization == null || !authorization.startsWith(TOKEN_PREFIX)) {
+            throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "未登录");
+        }
+        String token = authorization.substring(TOKEN_PREFIX.length()).trim();
+        if (token.isEmpty()) {
+            throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "未登录");
+        }
+        return token;
+    }
+
+    private void validateTokenFormat(String token) {
+        if (token == null || token.isBlank()) {
+            throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "登录已失效");
+        }
         String[] parts = token.split("\\.");
         if (parts.length != 2 || !constantTimeEquals(sign(parts[0]), parts[1])) {
             throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "登录已失效");
         }
+    }
 
+    private String[] decodePayload(String token) {
+        String[] parts = token.split("\\.");
         String[] payload = decode(parts[0]).split("\\|");
         if (payload.length != 2) {
             throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "登录已失效");
         }
+        return payload;
+    }
 
+    private long validateExpiresAt(String expiresAtValue) {
         long expiresAt;
         try {
-            expiresAt = Long.parseLong(payload[1]);
+            expiresAt = Long.parseLong(expiresAtValue);
         } catch (NumberFormatException exception) {
             throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "登录已失效");
         }
@@ -62,12 +115,7 @@ public class AuthTokenUtil {
         if (Instant.now().getEpochSecond() > expiresAt) {
             throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "登录已失效");
         }
-
-        try {
-            return Long.valueOf(payload[0]);
-        } catch (NumberFormatException exception) {
-            throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "登录已失效");
-        }
+        return expiresAt;
     }
 
     private String sign(String value) {

@@ -1,16 +1,23 @@
 package com.campus.pinhaofan.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.campus.pinhaofan.common.AccessTokenBlacklist;
 import com.campus.pinhaofan.common.AuthTokenUtil;
 import com.campus.pinhaofan.common.PasswordHashUtil;
+import com.campus.pinhaofan.common.TokenHashUtil;
 import com.campus.pinhaofan.dto.AuthLoginRequest;
+import com.campus.pinhaofan.dto.AuthLogoutRequest;
+import com.campus.pinhaofan.dto.AuthRefreshRequest;
 import com.campus.pinhaofan.dto.AuthRegisterRequest;
 import com.campus.pinhaofan.entity.User;
+import com.campus.pinhaofan.entity.UserRefreshToken;
 import com.campus.pinhaofan.enums.ResultCode;
 import com.campus.pinhaofan.exception.BusinessException;
+import com.campus.pinhaofan.mapper.UserRefreshTokenMapper;
 import com.campus.pinhaofan.mapper.UserMapper;
 import com.campus.pinhaofan.service.AuthService;
 import com.campus.pinhaofan.vo.AuthLoginVO;
+import com.campus.pinhaofan.vo.AuthLogoutVO;
 import com.campus.pinhaofan.vo.AuthRegisterVO;
 import com.campus.pinhaofan.vo.AuthUserVO;
 import lombok.RequiredArgsConstructor;
@@ -18,16 +25,24 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.SecureRandom;
+import java.time.LocalDateTime;
+import java.util.Base64;
+
 @Service
 @RequiredArgsConstructor
 public class AuthServiceImpl implements AuthService {
 
     private static final String ACTIVE_STATUS = "ACTIVE";
     private static final String DISABLED_STATUS = "DISABLED";
+    private static final long REFRESH_TOKEN_EXPIRE_DAYS = 14L;
 
     private final UserMapper userMapper;
+    private final UserRefreshTokenMapper userRefreshTokenMapper;
     private final PasswordHashUtil passwordHashUtil;
     private final AuthTokenUtil authTokenUtil;
+    private final TokenHashUtil tokenHashUtil;
+    private final AccessTokenBlacklist accessTokenBlacklist;
 
     @Override
     @Transactional
@@ -54,6 +69,7 @@ public class AuthServiceImpl implements AuthService {
         user.setPasswordHash(passwordHashUtil.hash(password));
         user.setNickname(nickname);
         user.setStatus(ACTIVE_STATUS);
+        user.setPasswordUpdateTime(LocalDateTime.now());
 
         try {
             userMapper.insert(user);
@@ -65,7 +81,8 @@ public class AuthServiceImpl implements AuthService {
     }
 
     @Override
-    public AuthLoginVO login(AuthLoginRequest request) {
+    @Transactional
+    public AuthLoginVO login(AuthLoginRequest request, String clientIp) {
         String username = normalize(request.getUsername());
         String password = request.getPassword();
 
@@ -84,7 +101,12 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException(ResultCode.FORBIDDEN.getCode(), "用户已禁用");
         }
 
-        return new AuthLoginVO(authTokenUtil.createToken(user.getId()), toUserVO(user));
+        LocalDateTime now = LocalDateTime.now();
+        user.setLastLoginTime(now);
+        user.setLastLoginIp(normalize(clientIp).isEmpty() ? null : normalize(clientIp));
+        userMapper.updateById(user);
+
+        return issueTokenPair(user);
     }
 
     @Override
@@ -98,6 +120,86 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException(ResultCode.FORBIDDEN.getCode(), "用户已禁用");
         }
         return toUserVO(user);
+    }
+
+    @Override
+    @Transactional
+    public AuthLoginVO refresh(AuthRefreshRequest request) {
+        String refreshToken = normalize(request.getRefreshToken());
+        if (refreshToken.isEmpty()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "refreshToken 不能为空");
+        }
+
+        UserRefreshToken tokenRecord = getValidRefreshToken(refreshToken);
+        User user = userMapper.selectById(tokenRecord.getUserId());
+        if (user == null) {
+            throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "用户不存在");
+        }
+        if (DISABLED_STATUS.equals(user.getStatus()) || !ACTIVE_STATUS.equals(user.getStatus())) {
+            throw new BusinessException(ResultCode.FORBIDDEN.getCode(), "用户已禁用");
+        }
+
+        revokeRefreshToken(tokenRecord);
+        return issueTokenPair(user);
+    }
+
+    @Override
+    @Transactional
+    public AuthLogoutVO logout(String authorization, AuthLogoutRequest request) {
+        String accessToken = authTokenUtil.extractBearerToken(authorization);
+        Long userId = authTokenUtil.parseUserIdFromAuthorization(authorization);
+        String refreshToken = normalize(request.getRefreshToken());
+        if (refreshToken.isEmpty()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "refreshToken 不能为空");
+        }
+
+        UserRefreshToken tokenRecord = getValidRefreshToken(refreshToken);
+        if (!userId.equals(tokenRecord.getUserId())) {
+            throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "refreshToken 已失效");
+        }
+
+        revokeRefreshToken(tokenRecord);
+        accessTokenBlacklist.blacklist(accessToken, authTokenUtil.parseExpiresAt(accessToken));
+        return new AuthLogoutVO(true);
+    }
+
+    private AuthLoginVO issueTokenPair(User user) {
+        String accessToken = authTokenUtil.createToken(user.getId());
+        String refreshToken = createRefreshToken();
+        UserRefreshToken tokenRecord = new UserRefreshToken();
+        tokenRecord.setUserId(user.getId());
+        tokenRecord.setTokenHash(tokenHashUtil.sha256(refreshToken));
+        tokenRecord.setExpireTime(LocalDateTime.now().plusDays(REFRESH_TOKEN_EXPIRE_DAYS));
+        tokenRecord.setRevoked(false);
+        userRefreshTokenMapper.insert(tokenRecord);
+        return new AuthLoginVO(accessToken, refreshToken, authTokenUtil.getExpireSeconds(), toUserVO(user));
+    }
+
+    private UserRefreshToken getValidRefreshToken(String refreshToken) {
+        UserRefreshToken tokenRecord = userRefreshTokenMapper.selectOne(
+                new LambdaQueryWrapper<UserRefreshToken>()
+                        .eq(UserRefreshToken::getTokenHash, tokenHashUtil.sha256(refreshToken))
+                        .last("LIMIT 1")
+        );
+        if (tokenRecord == null
+                || Boolean.TRUE.equals(tokenRecord.getRevoked())
+                || tokenRecord.getExpireTime() == null
+                || !tokenRecord.getExpireTime().isAfter(LocalDateTime.now())) {
+            throw new BusinessException(ResultCode.UNAUTHORIZED.getCode(), "refreshToken 已失效");
+        }
+        return tokenRecord;
+    }
+
+    private void revokeRefreshToken(UserRefreshToken tokenRecord) {
+        tokenRecord.setRevoked(true);
+        tokenRecord.setRevokedTime(LocalDateTime.now());
+        userRefreshTokenMapper.updateById(tokenRecord);
+    }
+
+    private String createRefreshToken() {
+        byte[] bytes = new byte[48];
+        new SecureRandom().nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     private User findByAccount(String account) {

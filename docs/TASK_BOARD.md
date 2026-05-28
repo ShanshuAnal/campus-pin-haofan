@@ -35,6 +35,11 @@
 | T013 | 实现取餐状态更新与完成拼单 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T012-BE | 已实现 PUT /api/group-orders/{id}/pickup-assignee 与 PATCH /api/group-orders/{id}/pickup-status；支持发起人指定取餐人、发起人或取餐人按顺序更新取餐状态，取餐记录、拼单主状态与 order_status_log 同步更新；已通过 mvn test（34 个测试）和 mvn -DskipTests package |
 | T013-QA | T013 取餐状态更新与完成拼单测试 | 测试会话 | DONE | backend/src/test/, docs/05-测试用例.md, docs/TASK_BOARD.md | T013 | 已补充指定取餐人权限、取餐人归属、发起人/取餐人更新状态、普通参与者拒绝、取餐状态顺序推进、主状态同步、FINISHED 后不可修改和 order_status_log 断言；已通过 mvn test（39 个测试） |
 | T014 | 实现我的拼单与数据看板 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T013 | 已实现 GET /api/my/group-orders 与 GET /api/dashboard/summary；我的拼单支持 CREATED_BY_ME、JOINED_BY_ME、PICKUP_BY_ME、PENDING_PAYMENT、HISTORY，数据看板基于当前登录用户相关拼单聚合今日拼单数、成功拼单数、累计节省金额、热门类型/店铺等演示统计；未引入 Redis/MQ；已通过 mvn test（42 个测试）和 mvn -DskipTests package |
+| T014-QA | T014 我的拼单与数据看板测试 | 测试会话 | DONE | backend/src/test/, docs/05-测试用例.md, docs/TASK_BOARD.md | T014 | 已补充我的发起、我的参与、待付款、历史拼单、无关用户过滤和数据看板今日拼单数/成功拼单数/累计节省金额测试；记录 API 文档 scope 与看板响应示例需补齐；已通过 mvn test（46 个测试） |
+| T015-AUTH-DESIGN | 升级认证模块设计 | 主控会话 | DONE | docs/03-数据库设计.md, docs/04-API接口文档.md, docs/TASK_BOARD.md | T008, T008-API | 已将认证契约升级为 accessToken + refreshToken，新增 refresh/logout API，明确 token hash 存储，不引入 OAuth2、短信验证码或复杂 RBAC |
+| T015-SQL | 同步认证升级数据库脚本 | SQL 会话 | DONE | docs/03-数据库设计.md, sql/schema.sql, sql/data.sql, docs/TASK_BOARD.md | T015-AUTH-DESIGN | 已新增 user.last_login_time、user.last_login_ip、user.password_update_time 和 user_refresh_token 表；refreshToken 不明文落库，只保存 token_hash，并已更新演示数据 |
+| T015-BE | 实现双 token 认证接口 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T015-SQL | 已实现 login 返回 accessToken、refreshToken、expiresIn，新增 refresh/logout；refreshToken 仅保存 token_hash，refresh 成功轮换 refreshToken，logout 作废 refreshToken 并将 accessToken hash 加入内存黑名单；登录更新 last_login_time、last_login_ip；已通过 mvn test（49 个测试）和 mvn -DskipTests package |
+| T015-QA | 回归认证升级接口 | 测试会话 | TODO | backend/src/test/, docs/05-测试用例.md, docs/TASK_BOARD.md | T015-BE | 覆盖登录、me、refresh、logout、黑名单访问拒绝、refreshToken 作废和禁用用户场景 |
 
 ## 使用规则
 

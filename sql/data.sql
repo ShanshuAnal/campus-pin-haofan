@@ -7,11 +7,25 @@
 
 SET NAMES utf8mb4;
 
-INSERT INTO `user` (`id`, `account`, `password_hash`, `nickname`, `phone`, `status`, `create_time`, `update_time`) VALUES
-(1001, '20260001', '$2a$10$demoPasswordHashForDevOnly000000000000000000000000000001', '何帆', '13800000001', 'ACTIVE', '2026-05-26 08:00:00', '2026-05-26 08:00:00'),
-(1002, '20260002', '$2a$10$demoPasswordHashForDevOnly000000000000000000000000000002', '小雨', '13800000002', 'ACTIVE', '2026-05-26 08:00:00', '2026-05-26 08:00:00'),
-(1003, '20260003', '$2a$10$demoPasswordHashForDevOnly000000000000000000000000000003', '阿明', '13800000003', 'ACTIVE', '2026-05-26 08:00:00', '2026-05-26 08:00:00'),
-(1004, '20260004', '$2a$10$demoPasswordHashForDevOnly000000000000000000000000000004', '林可', '13800000004', 'ACTIVE', '2026-05-26 08:00:00', '2026-05-26 08:00:00');
+INSERT INTO `user` (
+  `id`, `account`, `password_hash`, `nickname`, `phone`, `status`,
+  `last_login_time`, `last_login_ip`, `password_update_time`, `create_time`, `update_time`
+) VALUES
+(1001, '20260001', '$2a$10$demoPasswordHashForDevOnly000000000000000000000000000001', '何帆', '13800000001', 'ACTIVE',
+ '2026-05-26 12:00:00', '127.0.0.1', '2026-05-26 08:00:00', '2026-05-26 08:00:00', '2026-05-26 12:00:00'),
+(1002, '20260002', '$2a$10$demoPasswordHashForDevOnly000000000000000000000000000002', '小雨', '13800000002', 'ACTIVE',
+ '2026-05-26 12:05:00', '127.0.0.1', '2026-05-26 08:00:00', '2026-05-26 08:00:00', '2026-05-26 12:05:00'),
+(1003, '20260003', '$2a$10$demoPasswordHashForDevOnly000000000000000000000000000003', '阿明', '13800000003', 'ACTIVE',
+ NULL, NULL, '2026-05-26 08:00:00', '2026-05-26 08:00:00', '2026-05-26 08:00:00'),
+(1004, '20260004', '$2a$10$demoPasswordHashForDevOnly000000000000000000000000000004', '林可', '13800000004', 'ACTIVE',
+ '2026-05-26 21:50:00', '127.0.0.1', '2026-05-26 08:00:00', '2026-05-26 08:00:00', '2026-05-26 21:50:00');
+
+INSERT INTO `user_refresh_token` (
+  `id`, `user_id`, `token_hash`, `expire_time`, `revoked`, `revoked_time`, `create_time`, `update_time`
+) VALUES
+(1101, 1001, 'demo-refresh-token-hash-1001-active', '2026-06-02 12:00:00', 0, NULL, '2026-05-26 12:00:00', '2026-05-26 12:00:00'),
+(1102, 1002, 'demo-refresh-token-hash-1002-active', '2026-06-02 12:05:00', 0, NULL, '2026-05-26 12:05:00', '2026-05-26 12:05:00'),
+(1103, 1004, 'demo-refresh-token-hash-1004-revoked', '2026-06-02 21:50:00', 1, '2026-05-26 22:10:00', '2026-05-26 21:50:00', '2026-05-26 22:10:00');
 
 INSERT INTO `group_order` (
   `id`, `title`, `order_type`, `merchant_name`, `pickup_location`, `creator_id`, `deadline_time`,

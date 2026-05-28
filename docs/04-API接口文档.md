@@ -38,23 +38,27 @@
 
 ### 2.3 认证方式
 
-MVP 认证方案统一为“轻量真实登录”：
+认证方案升级为 `accessToken + refreshToken` 的轻量真实登录：
 
-- 支持注册、登录、获取当前用户；
+- 支持注册、登录、获取当前用户、刷新 token、登出；
 - 注册和登录使用 `username`、`password`；
 - API 字段 `username` 映射数据库 `user.account`；
 - 密码由后端加密后写入 `user.password_hash`，接口中不得返回密码或密码哈希；
-- 不引入完整 Spring Security；
-- 不做验证码、刷新 token、复杂角色权限；
-- 登录成功后后端返回轻量 token，后续接口通过请求头传递。
+- 登录成功返回 `accessToken`、`refreshToken`、`expiresIn` 和用户信息；
+- `accessToken` 用于访问业务接口，`refreshToken` 用于换取新的 token；
+- token 不得明文落库，数据库只允许保存 token hash；
+- 登出时将 `accessToken` hash 加入黑名单，并将对应 `refreshToken` 作废；
+- 不引入 OAuth2、短信验证码、完整 Spring Security 或复杂 RBAC。
 
-除注册、登录接口外，其余 MVP 接口都需要登录态。前端通过请求头传递 token：
+除注册、登录、刷新 token 接口外，其余 MVP 接口都需要登录态。前端通过请求头传递 accessToken：
 
 ```text
-Authorization: Bearer <token>
+Authorization: Bearer <accessToken>
 ```
 
-当前用户身份以 token 解析结果为准，前端不得提交 `creatorId`、`userId` 等字段来替代后端鉴权。
+当前用户身份以 accessToken 解析结果为准，前端不得提交 `creatorId`、`userId` 等字段来替代后端鉴权。
+
+数据库升级需要由 SQL 会话补齐 `user.token_version`、`user.last_login_time` 字段和 `user_refresh_token` 表，本文档先作为前后端接口契约。
 
 ### 2.4 状态枚举
 
@@ -96,7 +100,7 @@ UNREAD, READ
 | --- | --- | --- |
 | 200 | 成功 | 请求处理成功 |
 | 400 | 参数错误或业务规则不满足 | 金额非法、状态不允许、人数已满 |
-| 401 | 未登录或登录失效 | 缺少 token、token 过期 |
+| 401 | 未登录或登录失效 | 缺少 accessToken、accessToken 过期或 refreshToken 失效 |
 | 403 | 权限不足 | 非发起人锁单、非本人标记付款 |
 | 404 | 数据不存在 | 拼单、参与记录、用户不存在 |
 | 409 | 数据冲突 | 重复加入、重复确认、状态已变化 |
@@ -252,7 +256,7 @@ UNREAD, READ
 
 说明：
 
-- 注册成功默认不等同于已登录；前端可继续调用 `POST /api/auth/login` 获取 token。
+- 注册成功默认不等同于已登录；前端可继续调用 `POST /api/auth/login` 获取 `accessToken` 和 `refreshToken`。
 - 如后端后续决定注册成功自动登录，必须先更新本文档。
 
 ### 4.1 用户登录
@@ -284,7 +288,9 @@ UNREAD, READ
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `token` | string | 是 | 后端签发的轻量登录 token |
+| `accessToken` | string | 是 | 后端签发的访问 token，用于 `Authorization` 请求头 |
+| `refreshToken` | string | 是 | 后端签发的刷新 token，用于 `POST /api/auth/refresh` |
+| `expiresIn` | number | 是 | accessToken 有效期秒数 |
 | `user.id` | number | 是 | 用户 ID |
 | `user.username` | string | 是 | 用户名，对应 `user.account` |
 | `user.nickname` | string | 是 | 昵称 |
@@ -298,7 +304,9 @@ UNREAD, READ
   "code": 200,
   "message": "success",
   "data": {
-    "token": "mock-jwt-token",
+    "accessToken": "access-token-demo",
+    "refreshToken": "refresh-token-demo",
+    "expiresIn": 7200,
     "user": {
       "id": 1001,
       "username": "20260001",
@@ -319,6 +327,11 @@ UNREAD, READ
 | 401 | `用户名或密码错误` | 用户不存在或密码校验失败 |
 | 403 | `用户已禁用` | `user.status = DISABLED` |
 
+说明：
+
+- 登录成功后端需要创建有效的 refreshToken 会话记录，只保存 `refreshToken` hash，不保存明文 token。
+- `accessToken` 明文仅返回给前端；如需要支持登出黑名单，数据库只保存 `accessToken` hash。
+
 ### 4.2 获取当前用户
 
 | 项 | 内容 |
@@ -326,7 +339,7 @@ UNREAD, READ
 | 方法 | `GET` |
 | 路径 | `/api/auth/me` |
 | 关联流程 | 登录态恢复 |
-| 权限说明 | 已登录用户。需要携带 `Authorization: Bearer <token>`。 |
+| 权限说明 | 已登录用户。需要携带 `Authorization: Bearer <accessToken>`。 |
 
 请求参数：无。
 
@@ -361,8 +374,136 @@ UNREAD, READ
 | code | message | 说明 |
 | --- | --- | --- |
 | 401 | `未登录` | 未提交 Authorization 请求头 |
-| 401 | `登录已失效` | token 缺失或无效 |
-| 404 | `用户不存在` | token 中用户 ID 找不到对应用户 |
+| 401 | `登录已失效` | accessToken 缺失、无效、过期或已进入黑名单 |
+| 404 | `用户不存在` | accessToken 中用户 ID 找不到对应用户 |
+
+### 4.3 刷新 token
+
+| 项 | 内容 |
+| --- | --- |
+| 方法 | `POST` |
+| 路径 | `/api/auth/refresh` |
+| 关联流程 | 登录态续期 |
+| 权限说明 | 无需携带 accessToken。必须提交有效 `refreshToken`，后端校验其 hash、状态、过期时间和用户状态。 |
+
+请求参数：
+
+| 位置 | 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| body | `refreshToken` | string | 是 | 刷新 token 明文，仅用于本次请求校验，不得明文落库 |
+
+请求示例：
+
+```json
+{
+  "refreshToken": "refresh-token-demo"
+}
+```
+
+响应字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `accessToken` | string | 是 | 新签发的访问 token |
+| `refreshToken` | string | 是 | 新签发的刷新 token，建议轮换 |
+| `expiresIn` | number | 是 | 新 accessToken 有效期秒数 |
+| `user.id` | number | 是 | 用户 ID |
+| `user.username` | string | 是 | 用户名，对应 `user.account` |
+| `user.nickname` | string | 是 | 昵称 |
+| `user.phone` | string/null | 否 | 联系方式 |
+| `user.status` | string | 是 | 用户状态 |
+
+响应示例：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "accessToken": "new-access-token-demo",
+    "refreshToken": "new-refresh-token-demo",
+    "expiresIn": 7200,
+    "user": {
+      "id": 1001,
+      "username": "20260001",
+      "nickname": "小何",
+      "phone": null,
+      "status": "ACTIVE"
+    }
+  }
+}
+```
+
+错误场景：
+
+| code | message | 说明 |
+| --- | --- | --- |
+| 400 | `refreshToken 不能为空` | 未提交 `refreshToken` |
+| 401 | `refreshToken 已失效` | refreshToken 不存在、已过期、已作废或 hash 校验失败 |
+| 403 | `用户已禁用` | token 对应用户状态不是 `ACTIVE` |
+| 404 | `用户不存在` | token 对应用户不存在 |
+
+说明：
+
+- refresh 成功时建议轮换 refreshToken：旧 refreshToken 记录作废，新建有效记录。
+- refreshToken 明文只在请求和响应中出现，数据库仅保存 hash。
+
+### 4.4 用户登出
+
+| 项 | 内容 |
+| --- | --- |
+| 方法 | `POST` |
+| 路径 | `/api/auth/logout` |
+| 关联流程 | 退出登录 |
+| 权限说明 | 已登录用户。需要携带 `Authorization: Bearer <accessToken>`，并提交当前 `refreshToken`。 |
+
+请求参数：
+
+| 位置 | 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| header | `Authorization` | string | 是 | `Bearer <accessToken>` |
+| body | `refreshToken` | string | 是 | 当前会话 refreshToken，用于定位并作废 token 会话 |
+
+请求示例：
+
+```json
+{
+  "refreshToken": "refresh-token-demo"
+}
+```
+
+响应字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `logout` | boolean | 是 | 是否已完成登出处理 |
+
+响应示例：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "logout": true
+  }
+}
+```
+
+错误场景：
+
+| code | message | 说明 |
+| --- | --- | --- |
+| 400 | `refreshToken 不能为空` | 未提交 `refreshToken` |
+| 401 | `未登录` | 未提交 Authorization 请求头 |
+| 401 | `登录已失效` | accessToken 缺失、无效或过期 |
+| 401 | `refreshToken 已失效` | refreshToken 不存在、已过期或已作废 |
+
+说明：
+
+- logout 时后端必须将当前 accessToken hash 加入黑名单，避免未过期 accessToken 继续访问接口。
+- logout 时后端必须将对应 refreshToken 记录标记为作废。
+- accessToken 和 refreshToken 均不得明文落库。
 
 ## 5. 拼单接口
 
@@ -1334,7 +1475,7 @@ UNREAD, READ
 
 | 主流程节点 | 对应接口 |
 | --- | --- |
-| 登录 | `POST /api/auth/login`、`GET /api/auth/me` |
+| 登录与会话 | `POST /api/auth/login`、`GET /api/auth/me`、`POST /api/auth/refresh`、`POST /api/auth/logout` |
 | 用户注册（前置能力） | `POST /api/auth/register` |
 | 发起拼单 | `POST /api/group-orders` |
 | 成员加入 | `POST /api/group-orders/{id}/participants` |

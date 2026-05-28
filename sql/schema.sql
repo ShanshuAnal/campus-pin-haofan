@@ -13,6 +13,7 @@ DROP TABLE IF EXISTS `payment_record`;
 DROP TABLE IF EXISTS `meal_item`;
 DROP TABLE IF EXISTS `order_participant`;
 DROP TABLE IF EXISTS `group_order`;
+DROP TABLE IF EXISTS `user_refresh_token`;
 DROP TABLE IF EXISTS `user`;
 
 SET FOREIGN_KEY_CHECKS = 1;
@@ -24,12 +25,30 @@ CREATE TABLE `user` (
   `nickname` varchar(64) NOT NULL COMMENT '昵称或姓名',
   `phone` varchar(32) DEFAULT NULL COMMENT '联系方式',
   `status` varchar(32) NOT NULL DEFAULT 'ACTIVE' COMMENT '用户状态',
+  `last_login_time` datetime DEFAULT NULL COMMENT '最近登录时间',
+  `last_login_ip` varchar(64) DEFAULT NULL COMMENT '最近登录 IP',
+  `password_update_time` datetime DEFAULT NULL COMMENT '最近一次密码更新时间',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_user_account` (`account`),
   KEY `idx_user_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用户表';
+
+CREATE TABLE `user_refresh_token` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '刷新令牌 ID',
+  `user_id` bigint NOT NULL COMMENT '用户 ID，逻辑关联 user.id',
+  `token_hash` varchar(255) NOT NULL COMMENT 'refreshToken 哈希值，不保存明文 token',
+  `expire_time` datetime NOT NULL COMMENT 'refreshToken 过期时间',
+  `revoked` tinyint NOT NULL DEFAULT 0 COMMENT '作废标记，0 有效，1 已作废',
+  `revoked_time` datetime DEFAULT NULL COMMENT '作废时间',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_user_refresh_token_hash` (`token_hash`),
+  KEY `idx_user_refresh_token_user_revoked` (`user_id`, `revoked`),
+  KEY `idx_user_refresh_token_expire_revoked` (`expire_time`, `revoked`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用户刷新令牌表';
 
 CREATE TABLE `group_order` (
   `id` bigint NOT NULL AUTO_INCREMENT COMMENT '拼单 ID',

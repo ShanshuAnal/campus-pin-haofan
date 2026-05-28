@@ -9,7 +9,11 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class AuthLoginVO {
 
-    private String token;
+    private String accessToken;
+
+    private String refreshToken;
+
+    private Long expiresIn;
 
     private AuthUserVO user;
 }

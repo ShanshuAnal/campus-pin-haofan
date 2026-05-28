@@ -30,6 +30,15 @@ public class User {
     @TableField("status")
     private String status;
 
+    @TableField("last_login_time")
+    private LocalDateTime lastLoginTime;
+
+    @TableField("last_login_ip")
+    private String lastLoginIp;
+
+    @TableField("password_update_time")
+    private LocalDateTime passwordUpdateTime;
+
     @TableField("create_time")
     private LocalDateTime createTime;
 
