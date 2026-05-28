@@ -8,23 +8,31 @@ import com.campus.pinhaofan.common.DateTimeUtil;
 import com.campus.pinhaofan.dto.CreateGroupOrderRequest;
 import com.campus.pinhaofan.dto.JoinGroupOrderRequest;
 import com.campus.pinhaofan.dto.LockGroupOrderRequest;
+import com.campus.pinhaofan.dto.PaymentRequest;
+import com.campus.pinhaofan.dto.PickupAssigneeRequest;
+import com.campus.pinhaofan.dto.PickupStatusUpdateRequest;
 import com.campus.pinhaofan.entity.GroupOrder;
 import com.campus.pinhaofan.entity.MealItem;
 import com.campus.pinhaofan.entity.OrderParticipant;
 import com.campus.pinhaofan.entity.OrderStatusLog;
+import com.campus.pinhaofan.entity.PaymentRecord;
 import com.campus.pinhaofan.entity.PickupRecord;
 import com.campus.pinhaofan.entity.User;
 import com.campus.pinhaofan.enums.GroupOrderStatus;
 import com.campus.pinhaofan.enums.PaymentStatus;
+import com.campus.pinhaofan.enums.PickupStatus;
 import com.campus.pinhaofan.enums.ResultCode;
 import com.campus.pinhaofan.exception.BusinessException;
 import com.campus.pinhaofan.mapper.GroupOrderMapper;
 import com.campus.pinhaofan.mapper.MealItemMapper;
 import com.campus.pinhaofan.mapper.OrderParticipantMapper;
 import com.campus.pinhaofan.mapper.OrderStatusLogMapper;
+import com.campus.pinhaofan.mapper.PaymentRecordMapper;
 import com.campus.pinhaofan.mapper.PickupRecordMapper;
 import com.campus.pinhaofan.mapper.UserMapper;
 import com.campus.pinhaofan.service.GroupOrderService;
+import com.campus.pinhaofan.vo.DashboardRankItemVO;
+import com.campus.pinhaofan.vo.DashboardSummaryVO;
 import com.campus.pinhaofan.vo.GroupOrderDetailVO;
 import com.campus.pinhaofan.vo.GroupOrderVO;
 import com.campus.pinhaofan.vo.JoinGroupOrderVO;
@@ -32,10 +40,15 @@ import com.campus.pinhaofan.vo.LockAllocationVO;
 import com.campus.pinhaofan.vo.LockGroupOrderVO;
 import com.campus.pinhaofan.vo.LockedGroupOrderVO;
 import com.campus.pinhaofan.vo.MealItemVO;
+import com.campus.pinhaofan.vo.MyGroupOrderVO;
 import com.campus.pinhaofan.vo.OrderAmountVO;
 import com.campus.pinhaofan.vo.PageResultVO;
 import com.campus.pinhaofan.vo.ParticipantVO;
+import com.campus.pinhaofan.vo.PaymentActionVO;
+import com.campus.pinhaofan.vo.PaymentRecordVO;
+import com.campus.pinhaofan.vo.PickupAssigneeVO;
 import com.campus.pinhaofan.vo.PickupRecordVO;
+import com.campus.pinhaofan.vo.PickupStatusUpdateVO;
 import com.campus.pinhaofan.vo.UserSummaryVO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
@@ -44,6 +57,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
@@ -61,9 +75,40 @@ public class GroupOrderServiceImpl implements GroupOrderService {
     private static final String ACTIVE_STATUS = "ACTIVE";
     private static final String DISABLED_STATUS = "DISABLED";
     private static final String TARGET_TYPE_GROUP_ORDER = "GROUP_ORDER";
+    private static final String TARGET_TYPE_PICKUP_RECORD = "PICKUP_RECORD";
     private static final String ACTION_TYPE_CREATE_ORDER = "CREATE_ORDER";
     private static final String ACTION_TYPE_LOCK_ORDER = "LOCK_ORDER";
+    private static final String ACTION_TYPE_ASSIGN_PICKUP = "ASSIGN_PICKUP";
+    private static final String ACTION_TYPE_UPDATE_PICKUP_STATUS = "UPDATE_PICKUP_STATUS";
+    private static final String ACTION_TYPE_UPDATE_ORDER_STATUS = "UPDATE_ORDER_STATUS";
+    private static final String MY_SCOPE_CREATED_BY_ME = "CREATED_BY_ME";
+    private static final String MY_SCOPE_JOINED_BY_ME = "JOINED_BY_ME";
+    private static final String MY_SCOPE_PICKUP_BY_ME = "PICKUP_BY_ME";
+    private static final String MY_SCOPE_PENDING_PAYMENT = "PENDING_PAYMENT";
+    private static final String MY_SCOPE_HISTORY = "HISTORY";
+    private static final String DASHBOARD_SCOPE_ALL = "ALL";
+    private static final String DASHBOARD_SCOPE_MINE = "MINE";
     private static final Set<String> ORDER_TYPES = Set.of("TAKEOUT", "CANTEEN", "MILK_TEA", "MIDNIGHT_SNACK");
+    private static final Set<String> MY_GROUP_ORDER_SCOPES = Set.of(
+            MY_SCOPE_CREATED_BY_ME,
+            MY_SCOPE_JOINED_BY_ME,
+            MY_SCOPE_PICKUP_BY_ME,
+            MY_SCOPE_PENDING_PAYMENT,
+            MY_SCOPE_HISTORY
+    );
+    private static final Set<String> HISTORY_STATUSES = Set.of(
+            GroupOrderStatus.FINISHED.getValue(),
+            GroupOrderStatus.CANCELLED.getValue()
+    );
+    private static final String DEFAULT_GROUP_ORDER_SORT =
+            "ORDER BY CASE WHEN status IN ('CREATED','LOCKED','ORDERED','DELIVERING','ARRIVED','PICKED_UP') "
+                    + "THEN 0 ELSE 1 END ASC, create_time DESC";
+    private static final Set<String> PAYMENT_ALLOWED_ORDER_STATUSES = Set.of(
+            GroupOrderStatus.LOCKED.getValue(),
+            GroupOrderStatus.ORDERED.getValue(),
+            GroupOrderStatus.DELIVERING.getValue(),
+            GroupOrderStatus.ARRIVED.getValue()
+    );
 
     private final AuthTokenUtil authTokenUtil;
     private final UserMapper userMapper;
@@ -72,6 +117,7 @@ public class GroupOrderServiceImpl implements GroupOrderService {
     private final MealItemMapper mealItemMapper;
     private final PickupRecordMapper pickupRecordMapper;
     private final OrderStatusLogMapper orderStatusLogMapper;
+    private final PaymentRecordMapper paymentRecordMapper;
 
     @Override
     public PageResultVO<GroupOrderVO> listGroupOrders(
@@ -101,8 +147,12 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                 .and(!normalizedKeyword.isEmpty(), query -> query
                         .like(GroupOrder::getTitle, normalizedKeyword)
                         .or()
-                        .like(GroupOrder::getMerchantName, normalizedKeyword))
-                .orderByDesc(GroupOrder::getCreateTime);
+                        .like(GroupOrder::getMerchantName, normalizedKeyword));
+        if (normalizedStatus.isEmpty()) {
+            wrapper.last(DEFAULT_GROUP_ORDER_SORT);
+        } else {
+            wrapper.orderByDesc(GroupOrder::getCreateTime);
+        }
 
         IPage<GroupOrder> page = groupOrderMapper.selectPage(Page.of(current, size), wrapper);
         Map<Long, User> users = loadUsers(page.getRecords());
@@ -331,6 +381,553 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         );
     }
 
+    @Override
+    @Transactional
+    public PaymentActionVO markParticipantPaid(
+            String authorization,
+            Long orderId,
+            Long participantId,
+            PaymentRequest request) {
+        User currentUser = requireCurrentUser(authorization);
+        GroupOrder order = getExistingOrder(orderId);
+        validatePaymentOrderStatus(order);
+        OrderParticipant participant = getExistingParticipant(orderId, participantId);
+
+        if (!Objects.equals(participant.getUserId(), currentUser.getId())) {
+            throw new BusinessException(ResultCode.FORBIDDEN.getCode(), "只能标记自己的付款");
+        }
+        if (PaymentStatus.CONFIRMED.getValue().equals(participant.getPaymentStatus())) {
+            throw new BusinessException(ResultCode.CONFLICT.getCode(), "付款已确认，不能重复标记");
+        }
+        if (PaymentStatus.PAID.getValue().equals(participant.getPaymentStatus())) {
+            throw new BusinessException(ResultCode.CONFLICT.getCode(), "已标记付款，不能重复标记");
+        }
+        if (!PaymentStatus.UNPAID.getValue().equals(participant.getPaymentStatus())) {
+            throw new BusinessException(ResultCode.CONFLICT.getCode(), "当前付款状态不能标记付款");
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        participant.setPaymentStatus(PaymentStatus.PAID.getValue());
+        participant.setPaidMarkTime(now);
+        orderParticipantMapper.updateById(participant);
+
+        PaymentRecord paymentRecord = createPaymentRecord(
+                orderId,
+                participant,
+                PaymentStatus.PAID.getValue(),
+                now,
+                null,
+                null,
+                request == null ? null : request.getRemark()
+        );
+        paymentRecordMapper.insert(paymentRecord);
+
+        return toPaymentActionVO(participant, paymentRecord);
+    }
+
+    @Override
+    @Transactional
+    public PaymentActionVO confirmParticipantPayment(
+            String authorization,
+            Long orderId,
+            Long participantId,
+            PaymentRequest request) {
+        User currentUser = requireCurrentUser(authorization);
+        GroupOrder order = getExistingOrder(orderId);
+        validatePaymentOrderStatus(order);
+        OrderParticipant participant = getExistingParticipant(orderId, participantId);
+
+        if (!Objects.equals(order.getCreatorId(), currentUser.getId())) {
+            throw new BusinessException(ResultCode.FORBIDDEN.getCode(), "只有发起人可以确认付款");
+        }
+        if (PaymentStatus.CONFIRMED.getValue().equals(participant.getPaymentStatus())) {
+            throw new BusinessException(ResultCode.CONFLICT.getCode(), "付款已确认");
+        }
+        if (!PaymentStatus.PAID.getValue().equals(participant.getPaymentStatus())) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "成员尚未标记付款");
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        participant.setPaymentStatus(PaymentStatus.CONFIRMED.getValue());
+        participant.setPaidConfirmTime(now);
+        orderParticipantMapper.updateById(participant);
+
+        PaymentRecord paymentRecord = createPaymentRecord(
+                orderId,
+                participant,
+                PaymentStatus.CONFIRMED.getValue(),
+                participant.getPaidMarkTime(),
+                currentUser.getId(),
+                now,
+                request == null ? null : request.getRemark()
+        );
+        paymentRecordMapper.insert(paymentRecord);
+
+        return toPaymentActionVO(participant, paymentRecord);
+    }
+
+    @Override
+    @Transactional
+    public PickupAssigneeVO assignPickupUser(String authorization, Long orderId, PickupAssigneeRequest request) {
+        User currentUser = requireCurrentUser(authorization);
+        GroupOrder order = getExistingOrder(orderId);
+        validatePickupMutable(order);
+        if (!Objects.equals(order.getCreatorId(), currentUser.getId())) {
+            throw new BusinessException(ResultCode.FORBIDDEN.getCode(), "只有发起人可以指定取餐人");
+        }
+        if (!GroupOrderStatus.LOCKED.getValue().equals(order.getStatus())
+                && !GroupOrderStatus.ORDERED.getValue().equals(order.getStatus())
+                && !GroupOrderStatus.DELIVERING.getValue().equals(order.getStatus())
+                && !GroupOrderStatus.ARRIVED.getValue().equals(order.getStatus())
+                && !GroupOrderStatus.PICKED_UP.getValue().equals(order.getStatus())) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "拼单未锁定，不能指定取餐人");
+        }
+
+        Long pickupUserId = request.getPickupUserId();
+        User pickupUser = userMapper.selectById(pickupUserId);
+        if (pickupUser == null) {
+            throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "用户不存在");
+        }
+        if (!isCreatorOrParticipant(order, pickupUserId)) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "取餐人必须是拼单参与者或发起人");
+        }
+
+        PickupRecord pickupRecord = getPickupRecord(orderId);
+        String beforePickupStatus = pickupRecord == null ? null : pickupRecord.getPickupStatus();
+        String pickupStatus = beforePickupStatus == null ? PickupStatus.WAITING_ORDER.getValue() : beforePickupStatus;
+        String pickupLocation = normalize(request.getPickupLocation()).isEmpty()
+                ? order.getPickupLocation()
+                : normalize(request.getPickupLocation());
+
+        if (pickupRecord == null) {
+            pickupRecord = new PickupRecord();
+            pickupRecord.setGroupOrderId(orderId);
+            pickupRecord.setPickupStatus(pickupStatus);
+        }
+        pickupRecord.setPickupUserId(pickupUserId);
+        pickupRecord.setPickupLocation(pickupLocation);
+        pickupRecord.setEstimatedArrivalTime(parseOptionalDateTime(request.getEstimatedArrivalTime(), "estimatedArrivalTime 格式错误"));
+        pickupRecord.setRemark(request.getRemark());
+
+        if (pickupRecord.getId() == null) {
+            pickupRecordMapper.insert(pickupRecord);
+        } else {
+            pickupRecordMapper.updateById(pickupRecord);
+        }
+
+        String beforeOrderStatus = order.getStatus();
+        order.setPickupUserId(pickupUserId);
+        if (GroupOrderStatus.LOCKED.getValue().equals(order.getStatus())) {
+            order.setStatus(GroupOrderStatus.ORDERED.getValue());
+        }
+        groupOrderMapper.updateById(order);
+
+        insertStatusLog(
+                orderId,
+                currentUser.getId(),
+                TARGET_TYPE_PICKUP_RECORD,
+                pickupRecord.getId(),
+                ACTION_TYPE_ASSIGN_PICKUP,
+                beforePickupStatus,
+                pickupStatus,
+                normalize(request.getRemark()).isEmpty() ? "指定取餐人" : request.getRemark()
+        );
+        if (!Objects.equals(beforeOrderStatus, order.getStatus())) {
+            insertStatusLog(
+                    orderId,
+                    currentUser.getId(),
+                    TARGET_TYPE_GROUP_ORDER,
+                    orderId,
+                    ACTION_TYPE_UPDATE_ORDER_STATUS,
+                    beforeOrderStatus,
+                    order.getStatus(),
+                    "指定取餐人后同步推进拼单状态"
+            );
+        }
+
+        Map<Long, User> users = Map.of(pickupUser.getId(), pickupUser);
+        return new PickupAssigneeVO(orderId, pickupUserId, toPickupRecordVO(pickupRecord, users));
+    }
+
+    @Override
+    @Transactional
+    public PickupStatusUpdateVO updatePickupStatus(String authorization, Long orderId, PickupStatusUpdateRequest request) {
+        User currentUser = requireCurrentUser(authorization);
+        GroupOrder order = getExistingOrder(orderId);
+        validatePickupMutable(order);
+
+        PickupRecord pickupRecord = getPickupRecord(orderId);
+        if (pickupRecord == null) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "未指定取餐人");
+        }
+        if (!Objects.equals(order.getCreatorId(), currentUser.getId())
+                && !Objects.equals(pickupRecord.getPickupUserId(), currentUser.getId())) {
+            throw new BusinessException(ResultCode.FORBIDDEN.getCode(), "无权更新取餐状态");
+        }
+
+        String beforePickupStatus = pickupRecord.getPickupStatus();
+        String targetPickupStatus = normalize(request.getPickupStatus());
+        if (!isPickupStatus(targetPickupStatus)) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "pickupStatus 不合法");
+        }
+        validatePickupStatusTransition(beforePickupStatus, targetPickupStatus);
+
+        String beforeOrderStatus = order.getStatus();
+        String targetOrderStatus = resolveOrderStatusForPickup(targetPickupStatus);
+        validateOrderStatusForPickup(beforeOrderStatus, targetOrderStatus);
+
+        LocalDateTime now = LocalDateTime.now();
+        pickupRecord.setPickupStatus(targetPickupStatus);
+        if (!normalize(request.getPickupLocation()).isEmpty()) {
+            pickupRecord.setPickupLocation(normalize(request.getPickupLocation()));
+        }
+        if (PickupStatus.ARRIVED.getValue().equals(targetPickupStatus)) {
+            pickupRecord.setActualArrivalTime(parseOptionalDateTimeOrNow(
+                    request.getActualArrivalTime(),
+                    "actualArrivalTime 格式错误",
+                    now
+            ));
+        } else if (PickupStatus.PICKED_UP.getValue().equals(targetPickupStatus)) {
+            pickupRecord.setPickedUpTime(parseOptionalDateTimeOrNow(
+                    request.getPickedUpTime(),
+                    "pickedUpTime 格式错误",
+                    now
+            ));
+        } else if (PickupStatus.DISTRIBUTED.getValue().equals(targetPickupStatus)) {
+            pickupRecord.setDistributedTime(parseOptionalDateTimeOrNow(
+                    request.getDistributedTime(),
+                    "distributedTime 格式错误",
+                    now
+            ));
+        }
+        if (request.getRemark() != null) {
+            pickupRecord.setRemark(request.getRemark());
+        }
+        pickupRecordMapper.updateById(pickupRecord);
+
+        order.setStatus(targetOrderStatus);
+        if (GroupOrderStatus.FINISHED.getValue().equals(targetOrderStatus)) {
+            order.setFinishTime(now);
+        }
+        groupOrderMapper.updateById(order);
+
+        insertStatusLog(
+                orderId,
+                currentUser.getId(),
+                TARGET_TYPE_PICKUP_RECORD,
+                pickupRecord.getId(),
+                ACTION_TYPE_UPDATE_PICKUP_STATUS,
+                beforePickupStatus,
+                targetPickupStatus,
+                normalize(request.getRemark()).isEmpty() ? "更新取餐状态" : request.getRemark()
+        );
+        if (!Objects.equals(beforeOrderStatus, targetOrderStatus)) {
+            insertStatusLog(
+                    orderId,
+                    currentUser.getId(),
+                    TARGET_TYPE_GROUP_ORDER,
+                    orderId,
+                    ACTION_TYPE_UPDATE_ORDER_STATUS,
+                    beforeOrderStatus,
+                    targetOrderStatus,
+                    "取餐状态同步推进拼单状态"
+            );
+        }
+
+        Map<Long, User> users = loadUsersForPickup(order, pickupRecord);
+        return new PickupStatusUpdateVO(toPickupRecordVO(pickupRecord, users), order.getStatus());
+    }
+
+    @Override
+    public PageResultVO<MyGroupOrderVO> listMyGroupOrders(
+            String authorization,
+            String scope,
+            String status,
+            Long pageNum,
+            Long pageSize) {
+        User currentUser = requireCurrentUser(authorization);
+        String normalizedScope = normalize(scope);
+        String normalizedStatus = normalize(status);
+        long current = normalizePageNum(pageNum);
+        long size = normalizePageSize(pageSize);
+
+        if (!normalizedScope.isEmpty() && !MY_GROUP_ORDER_SCOPES.contains(normalizedScope)) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "scope 不合法");
+        }
+        if (!normalizedStatus.isEmpty() && !isGroupOrderStatus(normalizedStatus)) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "status 不合法");
+        }
+
+        List<OrderParticipant> myParticipants = loadParticipantsByUser(currentUser.getId());
+        List<OrderParticipant> pendingPaymentParticipants = myParticipants.stream()
+                .filter(participant -> PaymentStatus.UNPAID.getValue().equals(participant.getPaymentStatus()))
+                .toList();
+        Set<Long> joinedOrderIds = myParticipants.stream()
+                .map(OrderParticipant::getGroupOrderId)
+                .collect(Collectors.toSet());
+        Set<Long> pendingPaymentOrderIds = pendingPaymentParticipants.stream()
+                .map(OrderParticipant::getGroupOrderId)
+                .collect(Collectors.toSet());
+
+        if (shouldReturnEmptyMyOrders(normalizedScope, joinedOrderIds, pendingPaymentOrderIds)) {
+            return new PageResultVO<>(0L, current, size, Collections.emptyList());
+        }
+
+        LambdaQueryWrapper<GroupOrder> wrapper = new LambdaQueryWrapper<>();
+        applyMyGroupOrderScope(wrapper, normalizedScope, currentUser.getId(), joinedOrderIds, pendingPaymentOrderIds);
+        wrapper.eq(!normalizedStatus.isEmpty(), GroupOrder::getStatus, normalizedStatus)
+                .orderByDesc(GroupOrder::getCreateTime);
+
+        IPage<GroupOrder> page = groupOrderMapper.selectPage(Page.of(current, size), wrapper);
+        List<GroupOrder> orders = page.getRecords();
+        Map<Long, User> users = loadUsers(orders);
+        Map<Long, OrderParticipant> participantByOrderId = myParticipants.stream()
+                .collect(Collectors.toMap(OrderParticipant::getGroupOrderId, Function.identity(), (left, right) -> left));
+        Map<Long, PickupRecord> pickupRecordByOrderId = loadPickupRecordsByOrderIds(
+                orders.stream().map(GroupOrder::getId).collect(Collectors.toSet())
+        );
+
+        List<MyGroupOrderVO> records = orders.stream()
+                .map(order -> toMyGroupOrderVO(
+                        order,
+                        users,
+                        participantByOrderId.get(order.getId()),
+                        pickupRecordByOrderId.get(order.getId()),
+                        currentUser.getId()
+                ))
+                .toList();
+        return new PageResultVO<>(page.getTotal(), page.getCurrent(), page.getSize(), records);
+    }
+
+    @Override
+    public DashboardSummaryVO getDashboardSummary(String authorization, String startTime, String endTime, String scope) {
+        User currentUser = requireCurrentUser(authorization);
+        String normalizedScope = normalize(scope);
+        if (!normalizedScope.isEmpty()
+                && !DASHBOARD_SCOPE_ALL.equals(normalizedScope)
+                && !DASHBOARD_SCOPE_MINE.equals(normalizedScope)) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "scope 不合法");
+        }
+
+        LocalDateTime start = parseOptionalDateTime(startTime, "startTime 格式错误");
+        LocalDateTime end = parseOptionalDateTime(endTime, "endTime 格式错误");
+        if (start != null && end != null && start.isAfter(end)) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "startTime 不能晚于 endTime");
+        }
+
+        List<OrderParticipant> myParticipants = loadParticipantsByUser(currentUser.getId());
+        Set<Long> joinedOrderIds = myParticipants.stream()
+                .map(OrderParticipant::getGroupOrderId)
+                .collect(Collectors.toSet());
+
+        LambdaQueryWrapper<GroupOrder> wrapper = new LambdaQueryWrapper<>();
+        applyCurrentUserOrderScope(wrapper, currentUser.getId(), joinedOrderIds);
+        wrapper.ge(start != null, GroupOrder::getCreateTime, start)
+                .le(end != null, GroupOrder::getCreateTime, end)
+                .orderByDesc(GroupOrder::getCreateTime);
+
+        List<GroupOrder> orders = groupOrderMapper.selectList(wrapper);
+        Set<Long> orderIds = orders.stream().map(GroupOrder::getId).collect(Collectors.toSet());
+        List<OrderParticipant> participants = orderIds.isEmpty()
+                ? Collections.emptyList()
+                : orderParticipantMapper.selectList(
+                new LambdaQueryWrapper<OrderParticipant>()
+                        .in(OrderParticipant::getGroupOrderId, orderIds)
+        );
+        return toDashboardSummaryVO(orders, participants);
+    }
+
+    private List<OrderParticipant> loadParticipantsByUser(Long userId) {
+        return orderParticipantMapper.selectList(
+                new LambdaQueryWrapper<OrderParticipant>()
+                        .eq(OrderParticipant::getUserId, userId)
+                        .orderByDesc(OrderParticipant::getJoinTime)
+        );
+    }
+
+    private boolean shouldReturnEmptyMyOrders(
+            String scope,
+            Set<Long> joinedOrderIds,
+            Set<Long> pendingPaymentOrderIds) {
+        return MY_SCOPE_JOINED_BY_ME.equals(scope) && joinedOrderIds.isEmpty()
+                || MY_SCOPE_PENDING_PAYMENT.equals(scope) && pendingPaymentOrderIds.isEmpty();
+    }
+
+    private void applyMyGroupOrderScope(
+            LambdaQueryWrapper<GroupOrder> wrapper,
+            String scope,
+            Long currentUserId,
+            Set<Long> joinedOrderIds,
+            Set<Long> pendingPaymentOrderIds) {
+        if (MY_SCOPE_CREATED_BY_ME.equals(scope)) {
+            wrapper.eq(GroupOrder::getCreatorId, currentUserId);
+            return;
+        }
+        if (MY_SCOPE_JOINED_BY_ME.equals(scope)) {
+            wrapper.in(GroupOrder::getId, joinedOrderIds);
+            return;
+        }
+        if (MY_SCOPE_PICKUP_BY_ME.equals(scope)) {
+            wrapper.eq(GroupOrder::getPickupUserId, currentUserId);
+            return;
+        }
+        if (MY_SCOPE_PENDING_PAYMENT.equals(scope)) {
+            wrapper.in(GroupOrder::getId, pendingPaymentOrderIds)
+                    .notIn(GroupOrder::getStatus, HISTORY_STATUSES);
+            return;
+        }
+        if (MY_SCOPE_HISTORY.equals(scope)) {
+            applyCurrentUserOrderScope(wrapper, currentUserId, joinedOrderIds);
+            wrapper.in(GroupOrder::getStatus, HISTORY_STATUSES);
+            return;
+        }
+        applyCurrentUserOrderScope(wrapper, currentUserId, joinedOrderIds);
+    }
+
+    private void applyCurrentUserOrderScope(
+            LambdaQueryWrapper<GroupOrder> wrapper,
+            Long currentUserId,
+            Set<Long> joinedOrderIds) {
+        wrapper.and(query -> {
+            query.eq(GroupOrder::getCreatorId, currentUserId)
+                    .or()
+                    .eq(GroupOrder::getPickupUserId, currentUserId);
+            if (!joinedOrderIds.isEmpty()) {
+                query.or().in(GroupOrder::getId, joinedOrderIds);
+            }
+        });
+    }
+
+    private Map<Long, PickupRecord> loadPickupRecordsByOrderIds(Set<Long> orderIds) {
+        if (orderIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return pickupRecordMapper.selectList(
+                        new LambdaQueryWrapper<PickupRecord>()
+                                .in(PickupRecord::getGroupOrderId, orderIds)
+                )
+                .stream()
+                .collect(Collectors.toMap(PickupRecord::getGroupOrderId, Function.identity(), (left, right) -> left));
+    }
+
+    private MyGroupOrderVO toMyGroupOrderVO(
+            GroupOrder order,
+            Map<Long, User> users,
+            OrderParticipant myParticipant,
+            PickupRecord pickupRecord,
+            Long currentUserId) {
+        String myRole = resolveMyRole(order, myParticipant, currentUserId);
+        return new MyGroupOrderVO(
+                toVO(order, users),
+                myRole,
+                myParticipant == null ? null : myParticipant.getId(),
+                myParticipant == null ? null : amount(myParticipant.getPayableAmount()),
+                myParticipant == null ? null : myParticipant.getPaymentStatus(),
+                pickupRecord == null ? null : pickupRecord.getPickupStatus()
+        );
+    }
+
+    private String resolveMyRole(GroupOrder order, OrderParticipant myParticipant, Long currentUserId) {
+        if (Objects.equals(order.getCreatorId(), currentUserId)) {
+            return "CREATOR";
+        }
+        if (Objects.equals(order.getPickupUserId(), currentUserId)) {
+            return "PICKUP";
+        }
+        if (myParticipant != null) {
+            return "PARTICIPANT";
+        }
+        return "RELATED";
+    }
+
+    private DashboardSummaryVO toDashboardSummaryVO(
+            List<GroupOrder> orders,
+            List<OrderParticipant> participants) {
+        LocalDateTime todayStart = LocalDate.now().atStartOfDay();
+        LocalDateTime tomorrowStart = LocalDate.now().plusDays(1).atStartOfDay();
+
+        long todayOrderCount = orders.stream()
+                .filter(order -> order.getCreateTime() != null
+                        && !order.getCreateTime().isBefore(todayStart)
+                        && order.getCreateTime().isBefore(tomorrowStart))
+                .count();
+        long successOrderCount = orders.stream()
+                .filter(order -> GroupOrderStatus.FINISHED.getValue().equals(order.getStatus()))
+                .count();
+        long createdCount = countOrdersByStatus(orders, GroupOrderStatus.CREATED.getValue());
+        long lockedCount = countOrdersByStatus(orders, GroupOrderStatus.LOCKED.getValue());
+        long finishedCount = countOrdersByStatus(orders, GroupOrderStatus.FINISHED.getValue());
+        long cancelledCount = countOrdersByStatus(orders, GroupOrderStatus.CANCELLED.getValue());
+
+        BigDecimal originalTotalAmount = sumOrderAmount(orders, GroupOrder::getOriginalTotalAmount);
+        BigDecimal actualDiscountAmount = sumOrderAmount(orders, GroupOrder::getActualDiscountAmount);
+        BigDecimal payableTotalAmount = sumOrderAmount(orders, GroupOrder::getPayableTotalAmount);
+        BigDecimal totalSavedAmount = orders.stream()
+                .filter(order -> !GroupOrderStatus.CANCELLED.getValue().equals(order.getStatus()))
+                .map(GroupOrder::getActualDiscountAmount)
+                .map(this::amount)
+                .reduce(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP), BigDecimal::add)
+                .setScale(2, RoundingMode.HALF_UP);
+
+        long paidParticipantCount = participants.stream()
+                .filter(participant -> PaymentStatus.PAID.getValue().equals(participant.getPaymentStatus()))
+                .count();
+        long confirmedParticipantCount = participants.stream()
+                .filter(participant -> PaymentStatus.CONFIRMED.getValue().equals(participant.getPaymentStatus()))
+                .count();
+
+        return new DashboardSummaryVO(
+                todayOrderCount,
+                successOrderCount,
+                totalSavedAmount,
+                (long) orders.size(),
+                createdCount,
+                lockedCount,
+                finishedCount,
+                cancelledCount,
+                (long) participants.size(),
+                originalTotalAmount,
+                actualDiscountAmount,
+                payableTotalAmount,
+                paidParticipantCount,
+                confirmedParticipantCount,
+                rankOrders(orders, GroupOrder::getOrderType),
+                rankOrders(orders, GroupOrder::getMerchantName)
+        );
+    }
+
+    private long countOrdersByStatus(List<GroupOrder> orders, String status) {
+        return orders.stream()
+                .filter(order -> status.equals(order.getStatus()))
+                .count();
+    }
+
+    private BigDecimal sumOrderAmount(
+            List<GroupOrder> orders,
+            Function<GroupOrder, BigDecimal> amountExtractor) {
+        return orders.stream()
+                .map(amountExtractor)
+                .map(this::amount)
+                .reduce(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP), BigDecimal::add)
+                .setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private List<DashboardRankItemVO> rankOrders(
+            List<GroupOrder> orders,
+            Function<GroupOrder, String> keyExtractor) {
+        Map<String, Long> counts = orders.stream()
+                .map(keyExtractor)
+                .map(this::normalize)
+                .filter(value -> !value.isEmpty())
+                .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()));
+        return counts.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .limit(5)
+                .map(entry -> new DashboardRankItemVO(entry.getKey(), entry.getValue()))
+                .toList();
+    }
+
     private GroupOrder getExistingOrder(Long orderId) {
         if (orderId == null || orderId <= 0) {
             throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "orderId 不合法");
@@ -340,6 +937,150 @@ public class GroupOrderServiceImpl implements GroupOrderService {
             throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "拼单不存在");
         }
         return order;
+    }
+
+    private OrderParticipant getExistingParticipant(Long orderId, Long participantId) {
+        if (participantId == null || participantId <= 0) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "participantId 不合法");
+        }
+        OrderParticipant participant = orderParticipantMapper.selectById(participantId);
+        if (participant == null || !Objects.equals(participant.getGroupOrderId(), orderId)) {
+            throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "参与记录不存在");
+        }
+        return participant;
+    }
+
+    private void validatePaymentOrderStatus(GroupOrder order) {
+        if (!PAYMENT_ALLOWED_ORDER_STATUSES.contains(order.getStatus())) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "拼单未锁定，暂不能标记付款");
+        }
+    }
+
+    private PaymentRecord createPaymentRecord(
+            Long orderId,
+            OrderParticipant participant,
+            String paymentStatus,
+            LocalDateTime markTime,
+            Long confirmUserId,
+            LocalDateTime confirmTime,
+            String remark) {
+        PaymentRecord record = new PaymentRecord();
+        record.setGroupOrderId(orderId);
+        record.setParticipantId(participant.getId());
+        record.setUserId(participant.getUserId());
+        record.setAmount(amount(participant.getPayableAmount()));
+        record.setPaymentStatus(paymentStatus);
+        record.setMarkTime(markTime);
+        record.setConfirmUserId(confirmUserId);
+        record.setConfirmTime(confirmTime);
+        record.setRemark(remark);
+        return record;
+    }
+
+    private PickupRecord getPickupRecord(Long orderId) {
+        return pickupRecordMapper.selectOne(
+                new LambdaQueryWrapper<PickupRecord>()
+                        .eq(PickupRecord::getGroupOrderId, orderId)
+                        .last("LIMIT 1")
+        );
+    }
+
+    private void validatePickupMutable(GroupOrder order) {
+        if (GroupOrderStatus.FINISHED.getValue().equals(order.getStatus())
+                || GroupOrderStatus.CANCELLED.getValue().equals(order.getStatus())) {
+            throw new BusinessException(ResultCode.CONFLICT.getCode(), "拼单已取消或已完成");
+        }
+    }
+
+    private boolean isCreatorOrParticipant(GroupOrder order, Long userId) {
+        if (Objects.equals(order.getCreatorId(), userId)) {
+            return true;
+        }
+        Long count = orderParticipantMapper.selectCount(
+                new LambdaQueryWrapper<OrderParticipant>()
+                        .eq(OrderParticipant::getGroupOrderId, order.getId())
+                        .eq(OrderParticipant::getUserId, userId)
+        );
+        return count != null && count > 0;
+    }
+
+    private void validatePickupStatusTransition(String beforeStatus, String targetStatus) {
+        if (Objects.equals(beforeStatus, targetStatus)) {
+            throw new BusinessException(ResultCode.CONFLICT.getCode(), "取餐状态已是目标状态");
+        }
+        boolean allowed =
+                PickupStatus.WAITING_ORDER.getValue().equals(beforeStatus)
+                        && PickupStatus.WAITING_DELIVERY.getValue().equals(targetStatus)
+                || PickupStatus.WAITING_DELIVERY.getValue().equals(beforeStatus)
+                        && PickupStatus.ARRIVED.getValue().equals(targetStatus)
+                || PickupStatus.ARRIVED.getValue().equals(beforeStatus)
+                        && PickupStatus.PICKED_UP.getValue().equals(targetStatus)
+                || PickupStatus.PICKED_UP.getValue().equals(beforeStatus)
+                        && PickupStatus.DISTRIBUTED.getValue().equals(targetStatus);
+        if (!allowed) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "非法取餐状态流转");
+        }
+    }
+
+    private String resolveOrderStatusForPickup(String pickupStatus) {
+        if (PickupStatus.WAITING_DELIVERY.getValue().equals(pickupStatus)) {
+            return GroupOrderStatus.DELIVERING.getValue();
+        }
+        if (PickupStatus.ARRIVED.getValue().equals(pickupStatus)) {
+            return GroupOrderStatus.ARRIVED.getValue();
+        }
+        if (PickupStatus.PICKED_UP.getValue().equals(pickupStatus)) {
+            return GroupOrderStatus.PICKED_UP.getValue();
+        }
+        if (PickupStatus.DISTRIBUTED.getValue().equals(pickupStatus)) {
+            return GroupOrderStatus.FINISHED.getValue();
+        }
+        return GroupOrderStatus.ORDERED.getValue();
+    }
+
+    private void validateOrderStatusForPickup(String beforeOrderStatus, String targetOrderStatus) {
+        boolean allowed =
+                GroupOrderStatus.ORDERED.getValue().equals(beforeOrderStatus)
+                        && GroupOrderStatus.DELIVERING.getValue().equals(targetOrderStatus)
+                || GroupOrderStatus.DELIVERING.getValue().equals(beforeOrderStatus)
+                        && GroupOrderStatus.ARRIVED.getValue().equals(targetOrderStatus)
+                || GroupOrderStatus.ARRIVED.getValue().equals(beforeOrderStatus)
+                        && GroupOrderStatus.PICKED_UP.getValue().equals(targetOrderStatus)
+                || GroupOrderStatus.PICKED_UP.getValue().equals(beforeOrderStatus)
+                        && GroupOrderStatus.FINISHED.getValue().equals(targetOrderStatus);
+        if (!allowed) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "取餐状态不能早于拼单状态");
+        }
+    }
+
+    private boolean isPickupStatus(String value) {
+        for (PickupStatus status : PickupStatus.values()) {
+            if (status.getValue().equals(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private LocalDateTime parseOptionalDateTime(String value, String errorMessage) {
+        String normalized = normalize(value);
+        return normalized.isEmpty() ? null : DateTimeUtil.parse(normalized, errorMessage);
+    }
+
+    private LocalDateTime parseOptionalDateTimeOrNow(String value, String errorMessage, LocalDateTime now) {
+        LocalDateTime parsed = parseOptionalDateTime(value, errorMessage);
+        return parsed == null ? now : parsed;
+    }
+
+    private Map<Long, User> loadUsersForPickup(GroupOrder order, PickupRecord pickupRecord) {
+        Set<Long> userIds = Stream.of(order.getCreatorId(), pickupRecord.getPickupUserId())
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (userIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return userMapper.selectBatchIds(userIds).stream()
+                .collect(Collectors.toMap(User::getId, Function.identity()));
     }
 
     private void validateJoinOrder(GroupOrder order, Long userId, JoinGroupOrderRequest request) {
@@ -532,6 +1273,27 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         orderStatusLogMapper.insert(log);
     }
 
+    private void insertStatusLog(
+            Long orderId,
+            Long operatorId,
+            String targetType,
+            Long targetId,
+            String actionType,
+            String beforeStatus,
+            String afterStatus,
+            String remark) {
+        OrderStatusLog log = new OrderStatusLog();
+        log.setGroupOrderId(orderId);
+        log.setOperatorId(operatorId);
+        log.setTargetType(targetType);
+        log.setTargetId(targetId);
+        log.setActionType(actionType);
+        log.setBeforeStatus(beforeStatus);
+        log.setAfterStatus(afterStatus);
+        log.setRemark(remark);
+        orderStatusLogMapper.insert(log);
+    }
+
     private Map<Long, User> loadUsers(List<GroupOrder> orders) {
         Set<Long> userIds = orders.stream()
                 .flatMap(order -> java.util.stream.Stream.of(order.getCreatorId(), order.getPickupUserId()))
@@ -669,6 +1431,31 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                 amount(participant.getPayableAmount()),
                 amount(participant.getRoundingAdjustmentAmount()),
                 participant.getPaymentStatus()
+        );
+    }
+
+    private PaymentActionVO toPaymentActionVO(OrderParticipant participant, PaymentRecord paymentRecord) {
+        return new PaymentActionVO(
+                participant.getId(),
+                participant.getPaymentStatus(),
+                DateTimeUtil.format(participant.getPaidMarkTime()),
+                DateTimeUtil.format(participant.getPaidConfirmTime()),
+                toPaymentRecordVO(paymentRecord)
+        );
+    }
+
+    private PaymentRecordVO toPaymentRecordVO(PaymentRecord paymentRecord) {
+        return new PaymentRecordVO(
+                paymentRecord.getId(),
+                paymentRecord.getGroupOrderId(),
+                paymentRecord.getParticipantId(),
+                paymentRecord.getUserId(),
+                amount(paymentRecord.getAmount()),
+                paymentRecord.getPaymentStatus(),
+                DateTimeUtil.format(paymentRecord.getMarkTime()),
+                paymentRecord.getConfirmUserId(),
+                DateTimeUtil.format(paymentRecord.getConfirmTime()),
+                paymentRecord.getRemark()
         );
     }
 

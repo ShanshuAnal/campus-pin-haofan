@@ -64,6 +64,8 @@ Authorization: Bearer <token>
 CREATED, LOCKED, ORDERED, DELIVERING, ARRIVED, PICKED_UP, FINISHED, CANCELLED
 ```
 
+MVP 阶段不定义 `EXPIRED` 状态。拼单超过截止时间但不继续推进时，由发起人通过状态接口手动取消，目标状态使用 `CANCELLED`。自动过期可作为 RocketMQ 增强功能后置，后续若新增 `EXPIRED`，必须先更新本文档、领域规则、数据库说明、后端枚举和测试用例。
+
 付款状态 `order_participant.payment_status`、`payment_record.payment_status`：
 
 ```text
@@ -1325,6 +1327,7 @@ UNREAD, READ
 
 - Redis 可增强拼单大厅缓存、热门详情缓存、防重复提交、短时互斥和限流，但缓存失效或 Redis 不可用时必须回退 MySQL。
 - RocketMQ 可增强截止过期处理、状态变更通知和异步统计，但消息失败不能阻断拼单主流程。
+- MVP 阶段不使用 RocketMQ 自动生成 `EXPIRED` 拼单状态；超时不继续拼单时由发起人手动取消为 `CANCELLED`。
 - MVP 不定义 Redis 或 RocketMQ 的强制业务接口；如后续增加管理或重试接口，需先更新本文档和任务看板。
 
 ## 11. MVP 主流程接口覆盖关系

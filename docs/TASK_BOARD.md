@@ -27,7 +27,14 @@
 | T010 | 全局契约对齐 | 主控会话 | DONE | docs/03-数据库设计.md, docs/04-API接口文档.md, sql/schema.sql, sql/data.sql, docs/CONTRACT_ALIGNMENT_REPORT.md | T008, T009 | 已对齐 API 路径、username/account 映射、pickup_location、增强表和中间件边界；后端拼单详情与加入拼单实现见 T010-BE |
 | T010-BE | 实现拼单详情与加入拼单 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T009 | 已实现 GET /api/group-orders/{orderId} 与 POST /api/group-orders/{orderId}/participants，详情返回参与者、餐品、金额进度和取餐状态；加入拼单会校验 CREATED、截止时间、重复加入、人数上限和餐品金额，并更新订单金额汇总；已通过 mvn test、mvn -DskipTests package |
 | T011 | 实现锁单与优惠分摊 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T010-BE | 已实现 POST /api/group-orders/{orderId}/lock，仅发起人可在 CREATED 状态锁单；锁单时基于 meal_item.subtotal_amount 重新汇总金额，按成员原始金额占比分摊优惠，尾差固定写入发起人 rounding_adjustment_amount，并更新 group_order 汇总、LOCKED 状态、locked_time 和 order_status_log；已通过 mvn test、mvn -DskipTests package |
-| T012 | 已实现后端模块测试与审查 | 测试会话 | DONE | backend/src/test/, docs/05-测试用例.md, docs/TASK_BOARD.md | T008, T009, T010-BE, T011 | 已补充认证、拼单大厅、发起拼单、详情、加入、锁单与优惠分摊 Service 单元测试；已记录付款接口未实现和大厅默认排序契约差异；已通过 mvn test |
+| T012 | 已实现后端模块测试与审查 | 测试会话 | DONE | backend/src/test/, docs/05-测试用例.md, docs/TASK_BOARD.md | T008, T009, T010-BE, T011 | 已补充认证、拼单大厅、发起拼单、详情、加入、锁单与优惠分摊 Service 单元测试；原记录付款接口未实现，现已由 T012-BE 实现；已通过 mvn test |
+| T012-BE | 实现付款标记与付款确认 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T011 | 已实现 POST /api/group-orders/{orderId}/participants/{participantId}/payments/mark 与 /confirm；仅 LOCKED、ORDERED、DELIVERING、ARRIVED 可操作，成员只能标记自己付款，发起人可确认任意成员付款，重复标记/确认返回明确业务错误；已写入 payment_record 并通过 mvn test、mvn -DskipTests package |
+| T012-QA | T008-T012 后端模块测试与审查 | 测试会话 | DONE | backend/src/test/, docs/05-测试用例.md, docs/TASK_BOARD.md | T008, T009, T010-BE, T011, T012-BE | 已补充认证、拼单、锁单分摊、付款标记与付款确认测试；曾记录大厅默认排序契约差异（BUG-QA-001，已由后端修复）和 EXPIRED 状态口径差异；已通过 mvn test（30 个测试） |
+| BUG-QA-001 | 修复拼单大厅默认排序 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T012-QA | 已修复 GET /api/group-orders 未指定 status 时的默认排序：未结束拼单优先，同一优先级内按 create_time desc；不改变接口路径和响应结构，不处理 EXPIRED 状态；已通过 mvn test、mvn -DskipTests package |
+| BUG-QA-002 | 收口 EXPIRED 状态口径 | 主控会话 | DONE | docs/02-领域模型与业务规则.md, docs/04-API接口文档.md, docs/05-测试用例.md, docs/TASK_BOARD.md | T012-QA | 已按“延后 EXPIRED”处理：MVP 不实现 EXPIRED，超时不继续拼单由发起人手动取消为 CANCELLED，RocketMQ 自动过期作为增强功能后置；未修改后端代码 |
+| T013 | 实现取餐状态更新与完成拼单 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T012-BE | 已实现 PUT /api/group-orders/{id}/pickup-assignee 与 PATCH /api/group-orders/{id}/pickup-status；支持发起人指定取餐人、发起人或取餐人按顺序更新取餐状态，取餐记录、拼单主状态与 order_status_log 同步更新；已通过 mvn test（34 个测试）和 mvn -DskipTests package |
+| T013-QA | T013 取餐状态更新与完成拼单测试 | 测试会话 | DONE | backend/src/test/, docs/05-测试用例.md, docs/TASK_BOARD.md | T013 | 已补充指定取餐人权限、取餐人归属、发起人/取餐人更新状态、普通参与者拒绝、取餐状态顺序推进、主状态同步、FINISHED 后不可修改和 order_status_log 断言；已通过 mvn test（39 个测试） |
+| T014 | 实现我的拼单与数据看板 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | T013 | 已实现 GET /api/my/group-orders 与 GET /api/dashboard/summary；我的拼单支持 CREATED_BY_ME、JOINED_BY_ME、PICKUP_BY_ME、PENDING_PAYMENT、HISTORY，数据看板基于当前登录用户相关拼单聚合今日拼单数、成功拼单数、累计节省金额、热门类型/店铺等演示统计；未引入 Redis/MQ；已通过 mvn test（42 个测试）和 mvn -DskipTests package |
 
 ## 使用规则
 
