@@ -1,22 +1,48 @@
 <script setup lang="ts">
-import { DataLine, Discount, Finished, Tickets, UserFilled } from '@element-plus/icons-vue'
-import { computed, onMounted } from 'vue'
+import { Discount, Finished, Tickets, Trophy, UserFilled } from '@element-plus/icons-vue'
+import { computed, onMounted, ref } from 'vue'
 
 import AmountStat from '@/components/AmountStat.vue'
 import { useOrderStore } from '@/stores/orders'
+import { orderTypeText } from '@/utils/format'
+import type { OrderType } from '@/types/order'
 
 const orderStore = useOrderStore()
 const dashboard = computed(() => orderStore.dashboard)
+const loadFailed = ref(false)
 
-onMounted(orderStore.loadDashboard)
+const percent = (value: number, total: number) => {
+  if (!total) return 0
+  return Math.min(100, Math.round((value / total) * 100))
+}
+
+const createdPercent = computed(() => percent(dashboard.value?.createdCount ?? 0, dashboard.value?.orderCount ?? 0))
+const lockedPercent = computed(() => percent(dashboard.value?.lockedCount ?? 0, dashboard.value?.orderCount ?? 0))
+const finishedPercent = computed(() => percent(dashboard.value?.finishedCount ?? 0, dashboard.value?.orderCount ?? 0))
+
+const formatRankName = (name: string) => orderTypeText[name as OrderType] ?? name
+
+const loadDashboard = async () => {
+  loadFailed.value = false
+  try {
+    await orderStore.loadDashboard()
+  } catch {
+    loadFailed.value = true
+  }
+}
+
+onMounted(loadDashboard)
 </script>
 
 <template>
-  <section class="page-stack">
+  <section class="page-stack" v-loading="orderStore.dashboardLoading">
     <div class="page-header">
       <div>
         <h1>数据看板</h1>
-        <p>基础统计面向课堂演示，后续接入 GET /api/dashboard/summary。</p>
+        <p>基础统计来自真实接口，展示拼单规模、节省金额和热门偏好。</p>
+      </div>
+      <div class="header-actions">
+        <ElButton @click="loadDashboard">刷新</ElButton>
       </div>
     </div>
 
@@ -24,13 +50,13 @@ onMounted(orderStore.loadDashboard)
       <div class="dashboard-tiles">
         <div class="metric-tile">
           <ElIcon><Tickets /></ElIcon>
-          <span>拼单总数</span>
-          <strong>{{ dashboard.orderCount }}</strong>
+          <span>今日拼单数</span>
+          <strong>{{ dashboard.todayOrderCount }}</strong>
         </div>
         <div class="metric-tile">
           <ElIcon><Finished /></ElIcon>
-          <span>已完成</span>
-          <strong>{{ dashboard.finishedCount }}</strong>
+          <span>成功拼单数</span>
+          <strong>{{ dashboard.successOrderCount }}</strong>
         </div>
         <div class="metric-tile">
           <ElIcon><UserFilled /></ElIcon>
@@ -39,8 +65,8 @@ onMounted(orderStore.loadDashboard)
         </div>
         <div class="metric-tile">
           <ElIcon><Discount /></ElIcon>
-          <span>确认付款</span>
-          <strong>{{ dashboard.confirmedParticipantCount }}</strong>
+          <span>累计节省金额</span>
+          <strong>¥{{ Number(dashboard.totalSavedAmount ?? 0).toFixed(2) }}</strong>
         </div>
       </div>
 
@@ -58,31 +84,46 @@ onMounted(orderStore.loadDashboard)
           <div class="progress-list">
             <div>
               <span>待加入拼单</span>
-              <ElProgress :percentage="25" color="#2f7cf6" />
+              <ElProgress :percentage="createdPercent" color="#2f7cf6" />
             </div>
             <div>
               <span>已锁定拼单</span>
-              <ElProgress :percentage="17" color="#f59f00" />
+              <ElProgress :percentage="lockedPercent" color="#f59f00" />
             </div>
             <div>
               <span>已完成拼单</span>
-              <ElProgress :percentage="42" color="#21a67a" />
+              <ElProgress :percentage="finishedPercent" color="#21a67a" />
             </div>
           </div>
         </div>
         <aside class="detail-panel">
           <div class="panel-title">
-            <strong>演示重点</strong>
-            <span>围绕 MVP 主流程</span>
+            <strong>热门偏好</strong>
+            <span>类型与商家排行</span>
           </div>
-          <div class="timeline-list">
-            <p><ElIcon><DataLine /></ElIcon> 登录后进入拼单大厅</p>
-            <p><ElIcon><DataLine /></ElIcon> 发起拼单并等待成员加入</p>
-            <p><ElIcon><DataLine /></ElIcon> 锁单后展示优惠分摊</p>
-            <p><ElIcon><DataLine /></ElIcon> 标记付款并推进取餐状态</p>
+          <div class="rank-section">
+            <strong>热门类型</strong>
+            <div v-if="dashboard.popularTypes.length" class="timeline-list">
+              <p v-for="item in dashboard.popularTypes" :key="item.name">
+                <ElIcon><Trophy /></ElIcon>
+                {{ formatRankName(item.name) }} · {{ item.count }} 单
+              </p>
+            </div>
+            <ElEmpty v-else description="暂无类型统计" />
+          </div>
+          <div class="rank-section">
+            <strong>热门店铺</strong>
+            <div v-if="dashboard.popularMerchants.length" class="timeline-list">
+              <p v-for="item in dashboard.popularMerchants" :key="item.name">
+                <ElIcon><Trophy /></ElIcon>
+                {{ item.name }} · {{ item.count }} 单
+              </p>
+            </div>
+            <ElEmpty v-else description="暂无店铺统计" />
           </div>
         </aside>
       </div>
     </template>
+    <ElEmpty v-else :description="loadFailed ? '数据加载失败，请稍后重试' : '暂无看板数据'" />
   </section>
 </template>

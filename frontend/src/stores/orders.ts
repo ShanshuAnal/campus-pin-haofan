@@ -3,12 +3,20 @@ import { computed, ref } from 'vue'
 
 import { orderApi } from '@/api'
 import type {
+  AssignPickupRequest,
+  CreateGroupOrderRequest,
   DashboardSummary,
+  DashboardSummaryQuery,
   GroupOrderDetail,
   GroupOrderStatus,
   GroupOrderSummary,
+  JoinGroupOrderRequest,
+  LockGroupOrderRequest,
+  MyGroupOrderQuery,
   MyGroupOrderRecord,
-  OrderType
+  OrderType,
+  PaymentActionRequest,
+  UpdatePickupStatusRequest
 } from '@/types/order'
 
 export const useOrderStore = defineStore('orders', () => {
@@ -20,28 +28,60 @@ export const useOrderStore = defineStore('orders', () => {
   const status = ref<GroupOrderStatus | ''>('')
   const orderType = ref<OrderType | ''>('')
   const loading = ref(false)
+  const myOrdersLoading = ref(false)
+  const dashboardLoading = ref(false)
+  const total = ref(0)
+  const pageNum = ref(1)
+  const pageSize = ref(10)
+  const myOrdersTotal = ref(0)
+  const myOrdersPageNum = ref(1)
+  const myOrdersPageSize = ref(10)
 
-  const filteredOrders = computed(() => {
-    const normalizedKeyword = keyword.value.trim().toLowerCase()
-    return orders.value.filter((order) => {
-      const matchesKeyword =
-        !normalizedKeyword ||
-        order.title.toLowerCase().includes(normalizedKeyword) ||
-        order.merchantName.toLowerCase().includes(normalizedKeyword)
-      const matchesStatus = !status.value || order.status === status.value
-      const matchesType = !orderType.value || order.orderType === orderType.value
-      return matchesKeyword && matchesStatus && matchesType
-    })
-  })
+  const filteredOrders = computed(() => orders.value)
 
-  const loadOrders = async () => {
+  const loadOrders = async (targetPage = pageNum.value) => {
     loading.value = true
     try {
-      orders.value = await orderApi.listGroupOrders()
+      pageNum.value = targetPage
+      const result = await orderApi.listGroupOrders({
+        keyword: keyword.value.trim() || undefined,
+        status: status.value || undefined,
+        orderType: orderType.value || undefined,
+        pageNum: pageNum.value,
+        pageSize: pageSize.value
+      })
+      orders.value = result.records
+      total.value = result.total
+      pageNum.value = result.pageNum
+      pageSize.value = result.pageSize
     } finally {
       loading.value = false
     }
   }
+
+  const resetAndLoadOrders = () => loadOrders(1)
+
+  const changePageSize = async (size: number) => {
+    pageSize.value = size
+    await loadOrders(1)
+  }
+
+  const createOrder = (payload: CreateGroupOrderRequest) => orderApi.createGroupOrder(payload)
+
+  const joinOrder = (id: number, payload: JoinGroupOrderRequest) => orderApi.joinGroupOrder(id, payload)
+
+  const lockOrder = (id: number, payload: LockGroupOrderRequest) => orderApi.lockGroupOrder(id, payload)
+
+  const markPayment = (orderId: number, participantId: number, payload: PaymentActionRequest) =>
+    orderApi.markPayment(orderId, participantId, payload)
+
+  const confirmPayment = (orderId: number, participantId: number, payload: PaymentActionRequest) =>
+    orderApi.confirmPayment(orderId, participantId, payload)
+
+  const assignPickupUser = (id: number, payload: AssignPickupRequest) => orderApi.assignPickupUser(id, payload)
+
+  const updatePickupStatus = (id: number, payload: UpdatePickupStatusRequest) =>
+    orderApi.updatePickupStatus(id, payload)
 
   const loadDetail = async (id: number) => {
     loading.value = true
@@ -52,12 +92,30 @@ export const useOrderStore = defineStore('orders', () => {
     }
   }
 
-  const loadMyOrders = async () => {
-    myOrders.value = await orderApi.listMyOrders()
+  const loadMyOrders = async (params: MyGroupOrderQuery = {}) => {
+    myOrdersLoading.value = true
+    try {
+      const result = await orderApi.listMyOrders({
+        pageNum: myOrdersPageNum.value,
+        pageSize: myOrdersPageSize.value,
+        ...params
+      })
+      myOrders.value = result.records
+      myOrdersTotal.value = result.total
+      myOrdersPageNum.value = result.pageNum
+      myOrdersPageSize.value = result.pageSize
+    } finally {
+      myOrdersLoading.value = false
+    }
   }
 
-  const loadDashboard = async () => {
-    dashboard.value = await orderApi.getDashboardSummary()
+  const loadDashboard = async (params: DashboardSummaryQuery = {}) => {
+    dashboardLoading.value = true
+    try {
+      dashboard.value = await orderApi.getDashboardSummary(params)
+    } finally {
+      dashboardLoading.value = false
+    }
   }
 
   return {
@@ -69,8 +127,25 @@ export const useOrderStore = defineStore('orders', () => {
     status,
     orderType,
     loading,
+    myOrdersLoading,
+    dashboardLoading,
+    total,
+    pageNum,
+    pageSize,
+    myOrdersTotal,
+    myOrdersPageNum,
+    myOrdersPageSize,
     filteredOrders,
     loadOrders,
+    resetAndLoadOrders,
+    changePageSize,
+    createOrder,
+    joinOrder,
+    lockOrder,
+    markPayment,
+    confirmPayment,
+    assignPickupUser,
+    updatePickupStatus,
     loadDetail,
     loadMyOrders,
     loadDashboard

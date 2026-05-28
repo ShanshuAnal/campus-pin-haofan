@@ -46,7 +46,20 @@
 | T017-API-CONTRACT | 对齐 API 文档契约 | 主控会话 | DONE | docs/04-API接口文档.md, docs/05-测试用例.md, docs/TASK_BOARD.md | T015-IT | 已明确 MVP 不使用 PATCH /api/group-orders/{id}/status 完成拼单，完成拼单统一通过 POST /api/group-orders/{id}/pickup-status 推进到 DISTRIBUTED 并同步 FINISHED；已补齐我的拼单 PENDING_PAYMENT/HISTORY scope 和看板 todayOrderCount/successOrderCount/totalSavedAmount；记录后端集成测试 52 tests, 0 failures |
 | T016 | 创建前端工程骨架 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | T005 | 已创建 Vue3 + Vite + TypeScript 前端工程骨架，集成 Element Plus、Vue Router、Pinia、Axios，完成基础布局、六个页面路由、mock 数据和 axios 封装；已通过 npm install、npm run build，并启动本地 Vite 服务验证首页与 /hall 路由返回 200 |
 | T017 | 前端 API 封装与登录联调 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | T016, T015-BE | 已封装 axios 实例、Authorization 自动携带、统一错误处理和 register/login/logout/refresh/me 认证 API；Pinia 保存 accessToken、refreshToken 与用户信息，退出登录调用后端 logout，刷新页面可通过 /api/auth/me 恢复登录态；拼单业务继续使用 mock；已通过 npm run build，并联调 register/login/me/refresh/logout 均返回 code=200 |
-
+| T018 | 拼单大厅与发起拼单联调 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | T017, T009 | 已接入 GET /api/group-orders 与 POST /api/group-orders，支持状态、类型、关键词和分页查询；大厅与发起拼单不再使用 mock，保留详情、加入、我的拼单和看板 mock；已通过 npm run build，并联调注册/登录/创建拼单/组合查询均返回 code=200 |
+| T019 | 拼单详情与加入拼单联调 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | T018, T010-BE | 已接入 GET /api/group-orders/{orderId} 与 POST /api/group-orders/{orderId}/participants；详情页展示基础信息、发起人、参与者、餐品、金额进度、满减差额、付款和取餐状态；加入成功后刷新详情；已删除详情和加入拼单 mock，保留锁单、付款、取餐、我的拼单和数据看板 mock；已通过 npm run build，并联调详情、加入、重复加入、金额非法、人数已满和已锁定错误提示 |
+| T020 | 锁单、付款、取餐主流程联调 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | T019, T011, T012-BE, T013 | 已在拼单详情页接入锁单、标记付款、确认付款、指定取餐人和更新取餐状态真实接口，并按发起人、参与者、取餐人身份控制按钮显示；已删除详情页锁单、付款、取餐模拟操作，保留我的拼单和数据看板 mock；已通过 npm run build，并联调创建/加入/非发起人锁单失败/锁单/标记付款/确认付款/重复付款失败/指定取餐人/非法取餐跳转/越权取餐更新/合法取餐推进到 FINISHED；注意当前后端取餐状态接口实际为 PATCH /api/group-orders/{id}/pickup-status，与 API 文档 POST 口径存在差异 |
+| T021 | 我的拼单与数据看板联调 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | T020, T014 | 已接入 GET /api/my/group-orders 与 GET /api/dashboard/summary；我的拼单支持我发起、我参与、待付款、历史拼单分页查询，数据看板展示今日拼单数、成功拼单数、累计节省金额、热门类型和热门店铺；已删除剩余我的拼单和数据看板 mock，frontend/src 下无 mock 残留；已通过 npm run build，并回归联调登录注册、拼单大厅、发起拼单、详情、加入、锁单、付款、取餐、我的拼单和数据看板均走真实接口 |
+| V2-T001 | 全局 V2 设计重构 | 主控会话 | DONE | docs/01-需求说明.md, docs/02-领域模型与业务规则.md, docs/03-数据库设计.md, docs/04-API接口文档.md, docs/05-测试用例.md, docs/V2-升级设计说明.md, docs/TASK_BOARD.md | T021 | 已按 V2 重新梳理需求、领域、数据库建议、API 契约和测试矩阵；保留 MVP 能力，新增取消、超时、事件、并发、Redis/RocketMQ 边界和前端产品化方向；本任务未修改 backend/、frontend/、sql/schema.sql、sql/data.sql |
+| V2-T002 | 根据 V2 设计修改数据库文档和 schema | SQL 会话 | TODO | docs/03-数据库设计.md, sql/schema.sql, sql/data.sql, docs/TASK_BOARD.md | V2-T001 | 根据 V2 设计落地 group_order 取消/过期/版本字段、group_order_event 表、必要索引和演示数据；同步数据库文档 |
+| V2-T003 | 取消拼单接口 | 后端会话 | TODO | backend/, docs/TASK_BOARD.md | V2-T002 | 实现 POST /api/group-orders/{id}/cancel，补充权限校验、状态校验、取消原因、状态日志和事件记录 |
+| V2-T004 | 超时关闭 + RocketMQ 延迟消息 | 后端会话 | TODO | backend/, docs/TASK_BOARD.md | V2-T002, V2-T003 | 实现 CREATED 超时进入 EXPIRED；RocketMQ 只触发超时检查，最终状态以 MySQL 事务和状态校验为准 |
+| V2-T005 | 延迟/异常事件记录 | 后端会话 | TODO | backend/, docs/TASK_BOARD.md | V2-T002 | 实现 group_order_event 新增与查询接口；延迟、缺餐、联系失败、付款争议等记录为事件，不扩散主状态 |
+| V2-T006 | Redis 防重复提交和锁单短时锁 | 后端会话 | TODO | backend/, docs/TASK_BOARD.md | V2-T003, V2-T004, V2-T005 | 为关键写接口补充防重复提交；锁单等高冲突操作可使用 Redis 短时锁辅助，但正确性仍以 MySQL 为准 |
+| V2-T007 | 取消/超时/延迟/并发测试 | 测试会话 | TODO | backend/src/test/, docs/05-测试用例.md, docs/TASK_BOARD.md | V2-T003, V2-T004, V2-T005, V2-T006 | 覆盖取消权限、EXPIRED 超时关闭、延迟/异常事件、重复提交、锁单并发和 MQ 重复消费等场景 |
+| V2-T008 | 拼单大厅产品化改版 | 前端会话 | TODO | frontend/, docs/TASK_BOARD.md | V2-T001 | 将大厅从后台表格改为校园拼单产品首页，突出拼单卡片、取餐点、倒计时、凑单进度和可加入状态 |
+| V2-T009 | 详情页流程式改版 | 前端会话 | TODO | frontend/, docs/TASK_BOARD.md | V2-T003, V2-T005, V2-T008 | 按拼单协同流程重构详情页，突出主状态、成员金额、付款、取餐、事件时间线和当前用户可操作项 |
+| V2-T010 | 异常状态、取消、延迟提示联调 | 前端会话 | TODO | frontend/, docs/TASK_BOARD.md | V2-T004, V2-T005, V2-T009 | 联调取消、EXPIRED、延迟/异常事件提示和终态操作限制，确保前端口径与 V2 API 契约一致 |
 ## 使用规则
 
 - 开始任务前将状态改为 `DOING`。

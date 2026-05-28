@@ -1,20 +1,33 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import StatusTag from '@/components/StatusTag.vue'
 import { useOrderStore } from '@/stores/orders'
-import type { MyGroupOrderRecord } from '@/types/order'
+import type { MyGroupOrderRecord, MyGroupOrderScope } from '@/types/order'
 import { formatMoney, orderTypeText, paymentStatusText, pickupStatusText } from '@/utils/format'
 
 const orderStore = useOrderStore()
 const router = useRouter()
+const activeScope = ref<MyGroupOrderScope>('CREATED_BY_ME')
+const loadFailed = ref(false)
 
 const roleText = {
   CREATOR: '我发起',
   PARTICIPANT: '我参与',
-  PICKUP_USER: '我取餐'
+  PICKUP_USER: '我取餐',
+  PICKUP: '我取餐',
+  RELATED: '相关拼单'
 }
+
+const scopeTabs: Array<{ label: string; value: MyGroupOrderScope }> = [
+  { label: '我发起的拼单', value: 'CREATED_BY_ME' },
+  { label: '我参与的拼单', value: 'JOINED_BY_ME' },
+  { label: '待付款拼单', value: 'PENDING_PAYMENT' },
+  { label: '历史拼单', value: 'HISTORY' }
+]
+
+const emptyText = computed(() => (loadFailed.value ? '加载失败，请稍后重试' : '暂无相关拼单'))
 
 const formatOrderMeta = (row: MyGroupOrderRecord) =>
   `${row.order.merchantName} · ${orderTypeText[row.order.orderType]}`
@@ -24,7 +37,24 @@ const formatPayment = (row: MyGroupOrderRecord) =>
 
 const formatPickup = (row: MyGroupOrderRecord) => (row.pickupStatus ? pickupStatusText[row.pickupStatus] : '-')
 
-onMounted(orderStore.loadMyOrders)
+const loadMyOrders = async (pageNum = 1) => {
+  loadFailed.value = false
+  try {
+    await orderStore.loadMyOrders({
+      scope: activeScope.value,
+      pageNum,
+      pageSize: orderStore.myOrdersPageSize
+    })
+  } catch {
+    loadFailed.value = true
+  }
+}
+
+const changeScope = () => loadMyOrders(1)
+
+const changePage = (pageNum: number) => loadMyOrders(pageNum)
+
+onMounted(() => loadMyOrders())
 </script>
 
 <template>
@@ -36,7 +66,11 @@ onMounted(orderStore.loadMyOrders)
       </div>
     </div>
 
-    <div class="table-panel">
+    <div class="table-panel" v-loading="orderStore.myOrdersLoading">
+      <ElTabs v-model="activeScope" @tab-change="changeScope">
+        <ElTabPane v-for="tab in scopeTabs" :key="tab.value" :label="tab.label" :name="tab.value" />
+      </ElTabs>
+
       <ElTable :data="orderStore.myOrders" stripe>
         <ElTableColumn label="拼单" min-width="220">
           <template #default="{ row }">
@@ -68,7 +102,21 @@ onMounted(orderStore.loadMyOrders)
             <ElButton type="primary" link @click="router.push(`/orders/${row.order.id}`)">详情</ElButton>
           </template>
         </ElTableColumn>
+        <template #empty>
+          <ElEmpty :description="emptyText" />
+        </template>
       </ElTable>
+
+      <div class="pager">
+        <ElPagination
+          background
+          layout="prev, pager, next"
+          :current-page="orderStore.myOrdersPageNum"
+          :page-size="orderStore.myOrdersPageSize"
+          :total="orderStore.myOrdersTotal"
+          @current-change="changePage"
+        />
+      </div>
     </div>
   </section>
 </template>

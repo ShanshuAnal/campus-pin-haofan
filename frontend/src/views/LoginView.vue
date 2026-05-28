@@ -12,8 +12,8 @@ const userStore = useUserStore()
 const loading = ref(false)
 const registerLoading = ref(false)
 const form = reactive({
-  username: '20260001',
-  password: 'P@ssw0rd123'
+  username: '',
+  password: ''
 })
 
 const goAfterLogin = () => {

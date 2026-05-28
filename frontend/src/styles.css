@@ -160,6 +160,7 @@ select {
 }
 
 .stat-strip--compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   box-shadow: none;
 }
 
@@ -186,7 +187,7 @@ select {
 
 .toolbar {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) 180px 180px auto;
+  grid-template-columns: minmax(220px, 1fr) 170px 170px auto auto;
   gap: 12px;
   padding: 14px;
 }
@@ -260,6 +261,12 @@ select {
   min-width: 0;
 }
 
+.side-stack {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+
 .panel-title {
   display: flex;
   align-items: baseline;
@@ -270,6 +277,23 @@ select {
 
 .panel-title strong {
   font-size: 18px;
+}
+
+.panel-title--spaced {
+  margin-top: 20px;
+}
+
+.panel-title--compact {
+  margin-bottom: 10px;
+}
+
+.discount-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  color: var(--muted);
 }
 
 .pickup-card {
@@ -299,6 +323,62 @@ select {
   font-size: 18px;
 }
 
+.pickup-steps {
+  margin-top: 16px;
+}
+
+.pickup-steps.el-steps--vertical {
+  height: auto;
+}
+
+.pickup-steps.el-steps--vertical .el-step {
+  flex-basis: 64px !important;
+}
+
+.pickup-steps.el-steps--vertical .el-step:last-child {
+  flex-basis: auto !important;
+}
+
+.pickup-steps .el-step__main {
+  padding-bottom: 8px;
+}
+
+.pickup-placeholder {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--surface-soft);
+}
+
+.pickup-action-panel,
+.inline-action-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.inline-action-panel {
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 320px) auto;
+  align-items: center;
+}
+
+.inline-action-panel span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .action-row {
   flex-wrap: wrap;
   padding: 16px;
@@ -314,6 +394,10 @@ select {
 
 .form-panel {
   max-width: 760px;
+}
+
+.inline-fields .el-form-item {
+  flex: 1 1 0;
 }
 
 .dashboard-tiles {
@@ -346,6 +430,18 @@ select {
   gap: 14px;
 }
 
+.rank-section {
+  display: grid;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.rank-section:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
 .progress-list span {
   display: block;
   margin-bottom: 6px;
@@ -362,6 +458,10 @@ select {
 
 .timeline-list .el-icon {
   color: var(--green);
+}
+
+.pager {
+  justify-content: flex-end;
 }
 
 .login-page {
@@ -440,6 +540,7 @@ select {
 
   .toolbar,
   .detail-grid,
+  .inline-action-panel,
   .order-card,
   .login-panel {
     grid-template-columns: 1fr;

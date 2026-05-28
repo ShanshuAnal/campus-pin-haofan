@@ -3,7 +3,7 @@ import { formatMoney } from '@/utils/format'
 
 defineProps<{
   label: string
-  amount: number
+  amount: number | null | undefined
   tone?: 'green' | 'blue' | 'orange'
 }>()
 </script>

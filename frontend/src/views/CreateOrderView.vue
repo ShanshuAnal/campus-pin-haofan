@@ -1,25 +1,49 @@
 <script setup lang="ts">
 import { Check, Plus } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { reactive } from 'vue'
+import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import { useOrderStore } from '@/stores/orders'
+import type { CreateGroupOrderRequest } from '@/types/order'
+
 const router = useRouter()
-const form = reactive({
+const orderStore = useOrderStore()
+const submitting = ref(false)
+
+const pad = (value: number) => String(value).padStart(2, '0')
+
+const formatDateTime = (date: Date) => {
+  const year = date.getFullYear()
+  const month = pad(date.getMonth() + 1)
+  const day = pad(date.getDate())
+  const hours = pad(date.getHours())
+  const minutes = pad(date.getMinutes())
+  const seconds = pad(date.getSeconds())
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
+}
+
+const form = reactive<CreateGroupOrderRequest>({
   title: '晚课后奶茶拼单',
   orderType: 'MILK_TEA',
   merchantName: '一号门奶茶',
   pickupLocation: '一教大厅门口',
-  deadlineTime: '2026-05-28 19:30:00',
+  deadlineTime: formatDateTime(new Date(Date.now() + 2 * 60 * 60 * 1000)),
   maxParticipants: 5,
   discountThresholdAmount: 60,
   discountAmount: 10,
   remark: '先凑单，锁单后统一外部下单'
 })
 
-const submit = () => {
-  ElMessage.success('已使用 mock 数据模拟发起成功')
-  router.push('/hall')
+const submit = async () => {
+  submitting.value = true
+  try {
+    await orderStore.createOrder(form)
+    ElMessage.success('拼单创建成功')
+    router.push('/hall')
+  } finally {
+    submitting.value = false
+  }
 }
 </script>
 
@@ -28,7 +52,7 @@ const submit = () => {
     <div class="page-header">
       <div>
         <h1>发起拼单</h1>
-        <p>填写拼单基础信息，后续联调时会映射到 POST /api/group-orders。</p>
+        <p>填写拼单基础信息，创建后将进入拼单大厅等待成员加入。</p>
       </div>
     </div>
 
@@ -67,7 +91,7 @@ const submit = () => {
         <ElInput v-model="form.remark" type="textarea" :rows="3" />
       </ElFormItem>
       <ElFormItem>
-        <ElButton type="primary" :icon="Check" @click="submit">模拟创建</ElButton>
+        <ElButton type="primary" :icon="Check" :loading="submitting" @click="submit">创建拼单</ElButton>
         <ElButton :icon="Plus" @click="router.push('/hall')">返回大厅</ElButton>
       </ElFormItem>
     </ElForm>
