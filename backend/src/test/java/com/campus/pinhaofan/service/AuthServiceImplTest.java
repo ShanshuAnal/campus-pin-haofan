@@ -24,12 +24,17 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -44,6 +49,10 @@ class AuthServiceImplTest {
     private UserMapper userMapper;
     @Mock
     private UserRefreshTokenMapper userRefreshTokenMapper;
+    @Mock
+    private StringRedisTemplate stringRedisTemplate;
+    @Mock
+    private ValueOperations<String, String> valueOperations;
 
     private PasswordHashUtil passwordHashUtil;
     private AuthTokenUtil authTokenUtil;
@@ -55,7 +64,7 @@ class AuthServiceImplTest {
     void setUp() {
         passwordHashUtil = new PasswordHashUtil();
         tokenHashUtil = new TokenHashUtil();
-        accessTokenBlacklist = new AccessTokenBlacklist(tokenHashUtil);
+        accessTokenBlacklist = new AccessTokenBlacklist(tokenHashUtil, stringRedisTemplate);
         authTokenUtil = new AuthTokenUtil("unit-test-secret", 24, accessTokenBlacklist);
         authService = new AuthServiceImpl(
                 userMapper,
@@ -221,6 +230,8 @@ class AuthServiceImplTest {
         String accessToken = authTokenUtil.createToken(1001L);
         String refreshToken = "refresh-token-demo";
         UserRefreshToken existingToken = refreshToken(9001L, 1001L, refreshToken, false);
+        when(stringRedisTemplate.hasKey(anyString())).thenReturn(false);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
         when(userRefreshTokenMapper.selectOne(any())).thenReturn(existingToken);
 
         AuthLogoutRequest request = new AuthLogoutRequest();
@@ -229,11 +240,30 @@ class AuthServiceImplTest {
 
         assertThat(result.getLogout()).isTrue();
         assertThat(existingToken.getRevoked()).isTrue();
-        assertThat(accessTokenBlacklist.contains(accessToken)).isTrue();
-        assertThatThrownBy(() -> authTokenUtil.parseUserIdFromAuthorization("Bearer " + accessToken))
+
+        String expectedKey = "auth:blacklist:access:" + tokenHashUtil.sha256(accessToken);
+        ArgumentCaptor<Duration> ttlCaptor = ArgumentCaptor.forClass(Duration.class);
+        verify(valueOperations).set(eq(expectedKey), anyString(), ttlCaptor.capture());
+        assertThat(ttlCaptor.getValue().getSeconds()).isPositive();
+        assertThat(ttlCaptor.getValue().getSeconds()).isLessThanOrEqualTo(24 * 3600L);
+
+        when(stringRedisTemplate.hasKey(anyString())).thenReturn(true);
+        assertThatThrownBy(() -> authService.getCurrentUser("Bearer " + accessToken))
                 .isInstanceOfSatisfying(BusinessException.class, exception -> {
                     assertThat(exception.getCode()).isEqualTo(401);
                     assertThat(exception.getMessage()).isEqualTo("登录已失效");
+                });
+    }
+
+    @Test
+    void getCurrentUserFailsWhenRedisBlacklistUnavailable() {
+        String accessToken = authTokenUtil.createToken(1001L);
+        when(stringRedisTemplate.hasKey(anyString())).thenThrow(new RuntimeException("redis down"));
+
+        assertThatThrownBy(() -> authService.getCurrentUser("Bearer " + accessToken))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getCode()).isEqualTo(500);
+                    assertThat(exception.getMessage()).isEqualTo("Redis 黑名单不可用");
                 });
     }
 

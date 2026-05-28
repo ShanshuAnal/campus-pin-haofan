@@ -46,8 +46,10 @@
 - 密码由后端加密后写入 `user.password_hash`，接口中不得返回密码或密码哈希；
 - 登录成功返回 `accessToken`、`refreshToken`、`expiresIn` 和用户信息；
 - `accessToken` 用于访问业务接口，`refreshToken` 用于换取新的 token；
-- token 不得明文落库，数据库只允许保存 token hash；
-- 登出时将 `accessToken` hash 加入黑名单，并将对应 `refreshToken` 作废；
+- token 不得明文存储，只允许保存 SHA-256 摘要；
+- 登出时将 `accessToken` 的 SHA-256 摘要写入 Redis 黑名单，并将对应 `refreshToken` 作废；
+- accessToken 黑名单必须使用 Redis 存储，key 固定为 `auth:blacklist:access:{tokenHash}`，TTL 为 accessToken 剩余有效期；
+- refreshToken 仍使用 MySQL `user_refresh_token.token_hash` 保存 SHA-256 摘要；
 - 不引入 OAuth2、短信验证码、完整 Spring Security 或复杂 RBAC。
 
 除注册、登录、刷新 token 接口外，其余 MVP 接口都需要登录态。前端通过请求头传递 accessToken：
@@ -58,7 +60,7 @@ Authorization: Bearer <accessToken>
 
 当前用户身份以 accessToken 解析结果为准，前端不得提交 `creatorId`、`userId` 等字段来替代后端鉴权。
 
-数据库升级需要由 SQL 会话补齐 `user.token_version`、`user.last_login_time` 字段和 `user_refresh_token` 表，本文档先作为前后端接口契约。
+认证存储方案以本文档为准：Redis 是 accessToken 黑名单的必选存储，MySQL `user_refresh_token` 表是 refreshToken 摘要和作废状态的最终存储。
 
 ### 2.4 状态枚举
 
@@ -329,8 +331,9 @@ UNREAD, READ
 
 说明：
 
-- 登录成功后端需要创建有效的 refreshToken 会话记录，只保存 `refreshToken` hash，不保存明文 token。
-- `accessToken` 明文仅返回给前端；如需要支持登出黑名单，数据库只保存 `accessToken` hash。
+- 登录成功后端需要创建有效的 refreshToken 会话记录，只保存 refreshToken 的 SHA-256 摘要，不保存明文 token。
+- `accessToken` 明文仅返回给前端；后端不得落库明文 accessToken。
+- accessToken 只有在 logout 后才写入黑名单，黑名单存储在 Redis，key 为 `auth:blacklist:access:{tokenHash}`，`tokenHash` 为 accessToken 的 SHA-256 摘要。
 
 ### 4.2 获取当前用户
 
@@ -374,7 +377,7 @@ UNREAD, READ
 | code | message | 说明 |
 | --- | --- | --- |
 | 401 | `未登录` | 未提交 Authorization 请求头 |
-| 401 | `登录已失效` | accessToken 缺失、无效、过期或已进入黑名单 |
+| 401 | `登录已失效` | accessToken 缺失、无效、过期或已命中 Redis 黑名单 |
 | 404 | `用户不存在` | accessToken 中用户 ID 找不到对应用户 |
 
 ### 4.3 刷新 token
@@ -384,7 +387,7 @@ UNREAD, READ
 | 方法 | `POST` |
 | 路径 | `/api/auth/refresh` |
 | 关联流程 | 登录态续期 |
-| 权限说明 | 无需携带 accessToken。必须提交有效 `refreshToken`，后端校验其 hash、状态、过期时间和用户状态。 |
+| 权限说明 | 无需携带 accessToken。必须提交有效 `refreshToken`，后端校验其 SHA-256 摘要、状态、过期时间和用户状态。 |
 
 请求参数：
 
@@ -439,14 +442,14 @@ UNREAD, READ
 | code | message | 说明 |
 | --- | --- | --- |
 | 400 | `refreshToken 不能为空` | 未提交 `refreshToken` |
-| 401 | `refreshToken 已失效` | refreshToken 不存在、已过期、已作废或 hash 校验失败 |
+| 401 | `refreshToken 已失效` | refreshToken 不存在、已过期、已作废或 SHA-256 摘要校验失败 |
 | 403 | `用户已禁用` | token 对应用户状态不是 `ACTIVE` |
 | 404 | `用户不存在` | token 对应用户不存在 |
 
 说明：
 
 - refresh 成功时建议轮换 refreshToken：旧 refreshToken 记录作废，新建有效记录。
-- refreshToken 明文只在请求和响应中出现，数据库仅保存 hash。
+- refreshToken 明文只在请求和响应中出现，数据库仅保存 SHA-256 摘要。
 
 ### 4.4 用户登出
 
@@ -501,9 +504,10 @@ UNREAD, READ
 
 说明：
 
-- logout 时后端必须将当前 accessToken hash 加入黑名单，避免未过期 accessToken 继续访问接口。
+- logout 时后端必须将当前 accessToken 的 SHA-256 摘要加入 Redis 黑名单，避免未过期 accessToken 继续访问接口。
+- Redis 黑名单 key 固定为 `auth:blacklist:access:{tokenHash}`，TTL 固定为 accessToken 剩余有效期。
 - logout 时后端必须将对应 refreshToken 记录标记为作废。
-- accessToken 和 refreshToken 均不得明文落库。
+- accessToken 和 refreshToken 均不得明文存储；refreshToken 摘要仍保存在 `user_refresh_token.token_hash`。
 
 ## 5. 拼单接口
 
@@ -942,55 +946,22 @@ UNREAD, READ
 | 403 | `只有发起人可以锁单` | 当前用户不是 `creator_id` |
 | 409 | `当前状态不能锁单` | 状态不是 `CREATED` |
 
-### 5.6 推进或取消拼单主状态
+### 5.6 拼单主状态推进口径
 
-| 项 | 内容 |
-| --- | --- |
-| 方法 | `PATCH` |
-| 路径 | `/api/group-orders/{id}/status` |
-| 关联流程 | 下单、配送、到达、取餐、完成拼单、取消拼单 |
-| 权限说明 | 发起人可推进主状态和完成拼单；取餐人可在被指定后推进 `ORDERED -> DELIVERING/ARRIVED -> PICKED_UP` 等取餐相关主状态；普通成员不可操作。 |
+MVP 阶段不再提供或使用 `PATCH /api/group-orders/{id}/status` 作为完成拼单接口，前端不得调用该路径完成拼单。
 
-请求参数：
+拼单主状态由已实现的业务接口同步推进：
 
-| 位置 | 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- | --- |
-| path | `id` | number | 是 | 拼单 ID |
-| body | `targetStatus` | string | 是 | 目标拼单状态 |
-| body | `remark` | string | 否 | 状态变更备注 |
-
-请求示例：
-
-```json
-{
-  "targetStatus": "ORDERED",
-  "remark": "已在外部平台下单"
-}
-```
-
-响应示例：
-
-```json
-{
-  "code": 200,
-  "message": "success",
-  "data": {
-    "id": 2001,
-    "beforeStatus": "LOCKED",
-    "afterStatus": "ORDERED",
-    "updateTime": "2026-05-27 18:35:00"
-  }
-}
-```
-
-错误场景：
-
-| code | message | 说明 |
+| 触发动作 | 接口 | 主状态结果 |
 | --- | --- | --- |
-| 400 | `非法状态流转` | 例如 `CREATED -> FINISHED` |
-| 403 | `无权推进拼单状态` | 非发起人或非取餐人 |
-| 409 | `拼单已取消或已完成` | 终态不能继续修改 |
-| 404 | `拼单不存在` | 拼单 ID 无效 |
+| 锁定拼单 | `POST /api/group-orders/{id}/lock` | `CREATED -> LOCKED` |
+| 指定取餐人 | `PUT /api/group-orders/{id}/pickup-assignee` | `LOCKED -> ORDERED` |
+| 更新取餐状态为 `WAITING_DELIVERY` | `POST /api/group-orders/{id}/pickup-status` | 同步为 `DELIVERING` |
+| 更新取餐状态为 `ARRIVED` | `POST /api/group-orders/{id}/pickup-status` | 同步为 `ARRIVED` |
+| 更新取餐状态为 `PICKED_UP` | `POST /api/group-orders/{id}/pickup-status` | 同步为 `PICKED_UP` |
+| 更新取餐状态为 `DISTRIBUTED` | `POST /api/group-orders/{id}/pickup-status` | 同步为 `FINISHED` |
+
+完成拼单的唯一 MVP 口径是通过 `POST /api/group-orders/{id}/pickup-status` 将 `pickupStatus` 推进到 `DISTRIBUTED`，后端同步将 `group_order.status` 更新为 `FINISHED` 并写入完成时间和状态日志。
 
 ## 6. 付款接口
 
@@ -1190,10 +1161,10 @@ UNREAD, READ
 
 | 项 | 内容 |
 | --- | --- |
-| 方法 | `PATCH` |
+| 方法 | `POST` |
 | 路径 | `/api/group-orders/{id}/pickup-status` |
-| 关联流程 | 更新取餐状态 |
-| 权限说明 | 发起人或指定取餐人可操作。取餐状态必须按 `WAITING_ORDER -> WAITING_DELIVERY -> ARRIVED -> PICKED_UP -> DISTRIBUTED` 合法流转，并与拼单主状态匹配。 |
+| 关联流程 | 更新取餐状态、完成拼单 |
+| 权限说明 | 发起人或指定取餐人可操作。取餐状态必须按 `WAITING_ORDER -> WAITING_DELIVERY -> ARRIVED -> PICKED_UP -> DISTRIBUTED` 合法流转，并与拼单主状态匹配；当 `pickupStatus = DISTRIBUTED` 时，拼单主状态同步为 `FINISHED`。 |
 
 请求参数：
 
@@ -1211,10 +1182,10 @@ UNREAD, READ
 
 ```json
 {
-  "pickupStatus": "ARRIVED",
+  "pickupStatus": "DISTRIBUTED",
   "pickupLocation": "宿舍楼下",
-  "actualArrivalTime": "2026-05-27 19:05:00",
-  "remark": "餐已到宿舍楼下"
+  "distributedTime": "2026-05-27 19:20:00",
+  "remark": "已分发完成"
 }
 ```
 
@@ -1236,17 +1207,23 @@ UNREAD, READ
         "status": "ACTIVE"
       },
       "pickupLocation": "宿舍楼下",
-      "pickupStatus": "ARRIVED",
+      "pickupStatus": "DISTRIBUTED",
       "estimatedArrivalTime": "2026-05-27 19:10:00",
       "actualArrivalTime": "2026-05-27 19:05:00",
-      "pickedUpTime": null,
-      "distributedTime": null,
-      "remark": "餐已到宿舍楼下"
+      "pickedUpTime": "2026-05-27 19:12:00",
+      "distributedTime": "2026-05-27 19:20:00",
+      "remark": "已分发完成"
     },
-    "orderStatus": "ARRIVED"
+    "orderStatus": "FINISHED"
   }
 }
 ```
+
+说明：
+
+- `pickupStatus = DISTRIBUTED` 表示取餐和分发已完成，是 MVP 阶段完成拼单的唯一接口口径。
+- 后端在该状态推进成功后同步更新 `group_order.status = FINISHED`、写入 `finish_time` 和 `order_status_log`。
+- MVP 阶段不使用 `PATCH /api/group-orders/{id}/status` 完成拼单。
 
 错误场景：
 
@@ -1273,10 +1250,20 @@ UNREAD, READ
 
 | 位置 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- | --- |
-| query | `scope` | string | 否 | `CREATED_BY_ME`、`JOINED_BY_ME`、`PICKUP_BY_ME`，不传返回全部 |
+| query | `scope` | string | 否 | `CREATED_BY_ME`、`JOINED_BY_ME`、`PICKUP_BY_ME`、`PENDING_PAYMENT`、`HISTORY`，不传返回当前用户相关全部拼单 |
 | query | `status` | string | 否 | 拼单状态 |
 | query | `pageNum` | number | 否 | 页码 |
 | query | `pageSize` | number | 否 | 每页条数 |
+
+`scope` 取值说明：
+
+| scope | 说明 |
+| --- | --- |
+| `CREATED_BY_ME` | 当前用户发起的拼单 |
+| `JOINED_BY_ME` | 当前用户作为参与者加入的拼单 |
+| `PICKUP_BY_ME` | 当前用户负责取餐的拼单 |
+| `PENDING_PAYMENT` | 当前用户待付款且拼单未结束的拼单 |
+| `HISTORY` | 当前用户相关的已完成或已取消拼单 |
 
 响应示例：
 
@@ -1352,6 +1339,9 @@ UNREAD, READ
   "code": 200,
   "message": "success",
   "data": {
+    "todayOrderCount": 3,
+    "successOrderCount": 5,
+    "totalSavedAmount": 90.00,
     "orderCount": 12,
     "createdCount": 3,
     "lockedCount": 2,
@@ -1377,7 +1367,7 @@ UNREAD, READ
 
 ## 10. 增强接口与非强依赖说明
 
-通知记录、Redis 和 RocketMQ 均为增强能力，不得作为 MVP 主流程硬依赖。登录、拼单大厅、发起拼单、加入拼单、锁单分摊、付款标记、取餐状态和完成拼单必须在仅依赖 MySQL 的情况下可运行。
+除认证模块 accessToken 黑名单外，通知记录、Redis 和 RocketMQ 均为增强能力，不得作为拼单业务主流程硬依赖。拼单大厅、发起拼单、加入拼单、锁单分摊、付款标记、取餐状态和完成拼单必须在仅依赖 MySQL 的情况下可运行；认证模块的 logout 后 accessToken 立即失效依赖 Redis 黑名单。
 
 ### 10.1 通知列表（增强）
 
@@ -1466,10 +1456,12 @@ UNREAD, READ
 
 ### 10.3 Redis 与 RocketMQ 边界
 
-- Redis 可增强拼单大厅缓存、热门详情缓存、防重复提交、短时互斥和限流，但缓存失效或 Redis 不可用时必须回退 MySQL。
+- Redis 对拼单大厅缓存、热门详情缓存、防重复提交、短时互斥和限流仍属于增强能力，但认证模块 accessToken 黑名单是必选能力。
+- accessToken 黑名单 Redis key 固定为 `auth:blacklist:access:{tokenHash}`，`tokenHash` 为 accessToken 的 SHA-256 摘要，TTL 为 accessToken 剩余有效期。
+- Redis 中不得存储明文 accessToken 或 refreshToken。
 - RocketMQ 可增强截止过期处理、状态变更通知和异步统计，但消息失败不能阻断拼单主流程。
 - MVP 阶段不使用 RocketMQ 自动生成 `EXPIRED` 拼单状态；超时不继续拼单时由发起人手动取消为 `CANCELLED`。
-- MVP 不定义 Redis 或 RocketMQ 的强制业务接口；如后续增加管理或重试接口，需先更新本文档和任务看板。
+- 除认证黑名单外，MVP 不定义 Redis 或 RocketMQ 的强制业务接口；如后续增加管理或重试接口，需先更新本文档和任务看板。
 
 ## 11. MVP 主流程接口覆盖关系
 
@@ -1485,7 +1477,7 @@ UNREAD, READ
 | 标记付款 | `POST /api/group-orders/{id}/participants/{participantId}/payments/mark` |
 | 发起人确认付款 | `POST /api/group-orders/{id}/participants/{participantId}/payments/confirm` |
 | 指定取餐人 | `PUT /api/group-orders/{id}/pickup-assignee` |
-| 更新取餐状态 | `PATCH /api/group-orders/{id}/pickup-status`、`PATCH /api/group-orders/{id}/status` |
-| 完成拼单 | `PATCH /api/group-orders/{id}/status`，`targetStatus = FINISHED` |
+| 更新取餐状态 | `POST /api/group-orders/{id}/pickup-status` |
+| 完成拼单 | `POST /api/group-orders/{id}/pickup-status`，`pickupStatus = DISTRIBUTED` 后同步 `group_order.status = FINISHED` |
 | 我的拼单 | `GET /api/my/group-orders` |
 | 数据看板 | `GET /api/dashboard/summary` |

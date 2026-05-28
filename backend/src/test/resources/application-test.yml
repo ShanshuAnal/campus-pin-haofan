@@ -1,0 +1,36 @@
+server:
+  servlet:
+    context-path: /api
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${TEST_MYSQL_URL:jdbc:mysql://localhost:3306/campus_haofan_test?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true}
+    username: ${TEST_MYSQL_USERNAME:root}
+    password: ${TEST_MYSQL_PASSWORD:zhang914}
+    hikari:
+      pool-name: CampusHaoFanTestHikariPool
+      maximum-pool-size: 3
+      minimum-idle: 1
+      connection-timeout: 2000
+  sql:
+    init:
+      mode: never
+  data:
+    redis:
+      host: ${TEST_REDIS_HOST:localhost}
+      port: ${TEST_REDIS_PORT:6379}
+      database: ${TEST_REDIS_DATABASE:1}
+      timeout: 2s
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
+auth:
+  token:
+    secret: campus-pin-haofan-test-secret
+    expire-hours: 24
