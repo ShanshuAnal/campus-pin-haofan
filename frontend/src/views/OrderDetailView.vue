@@ -1,25 +1,39 @@
 <script setup lang="ts">
-import { Check, Location, Money, Refresh, UserFilled } from '@element-plus/icons-vue'
+import {
+  AlarmClock,
+  Check,
+  CirclePlus,
+  Close,
+  Dish,
+  InfoFilled,
+  Location,
+  Money,
+  Refresh,
+  Tickets,
+  UserFilled
+} from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
-import AmountStat from '@/components/AmountStat.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import { useOrderStore } from '@/stores/orders'
 import { useUserStore } from '@/stores/user'
-import type { Participant, PickupStatus } from '@/types/order'
-import { formatMoney, orderTypeText, paymentStatusText, pickupStatusText } from '@/utils/format'
+import type { GroupOrderEvent, Participant, PickupStatus } from '@/types/order'
+import { formatMoney, orderStatusText, orderTypeText, paymentStatusText, pickupStatusText } from '@/utils/format'
 
 const route = useRoute()
 const orderStore = useOrderStore()
 const userStore = useUserStore()
 const detail = computed(() => orderStore.currentDetail)
+const events = computed(() => orderStore.currentEvents)
 const orderId = computed(() => Number(route.params.id))
 const joinFormRef = ref<FormInstance>()
 const joinSubmitting = ref(false)
 const operationLoading = ref('')
+const cancelDialogVisible = ref(false)
+const cancelReason = ref('')
 
 const joinForm = reactive({
   itemName: '',
@@ -29,9 +43,7 @@ const joinForm = reactive({
   remark: ''
 })
 
-const lockForm = reactive({
-  remark: ''
-})
+const lockForm = reactive({ remark: '' })
 
 const pickupForm = reactive<{
   pickupUserId?: number
@@ -56,6 +68,7 @@ const joinRules: FormRules<typeof joinForm> = {
   unitPrice: [{ required: true, type: 'number', min: 0.01, message: '单价必须大于 0', trigger: 'change' }]
 }
 
+const terminalStatuses = ['FINISHED', 'CANCELLED', 'EXPIRED']
 const nextPickupStatusMap: Record<PickupStatus, PickupStatus | null> = {
   WAITING_ORDER: 'WAITING_DELIVERY',
   WAITING_DELIVERY: 'ARRIVED',
@@ -63,73 +76,237 @@ const nextPickupStatusMap: Record<PickupStatus, PickupStatus | null> = {
   PICKED_UP: 'DISTRIBUTED',
   DISTRIBUTED: null
 }
+const pickupFlowSteps: Array<{ status: PickupStatus; label: string }> = [
+  { status: 'WAITING_ORDER', label: '等待下单' },
+  { status: 'WAITING_DELIVERY', label: '等待配送' },
+  { status: 'ARRIVED', label: '已到达' },
+  { status: 'PICKED_UP', label: '已取餐' },
+  { status: 'DISTRIBUTED', label: '已分发' }
+]
 
 const currentUserId = computed(() => userStore.user?.id)
-
-const isCreator = computed(
-  () => Boolean(detail.value && currentUserId.value && detail.value.order.creator.id === currentUserId.value)
-)
-
+const order = computed(() => detail.value?.order)
+const permissions = computed(() => detail.value?.permissions ?? {})
+const isTerminal = computed(() => Boolean(order.value && terminalStatuses.includes(order.value.status)))
+const isCreator = computed(() => Boolean(order.value && currentUserId.value && order.value.creator.id === currentUserId.value))
 const currentParticipant = computed(() =>
   detail.value?.participants.find((participant) => participant.user.id === currentUserId.value)
 )
+const pickupStatus = computed(() => detail.value?.pickupRecord?.pickupStatus ?? detail.value?.pickup?.pickupStatus ?? null)
+const pickupLocation = computed(() => detail.value?.pickupRecord?.pickupLocation ?? detail.value?.pickup?.pickupLocation ?? order.value?.pickupLocation ?? '')
+const pickupUser = computed(() => detail.value?.pickupRecord?.pickupUser ?? detail.value?.pickup?.pickupUser ?? order.value?.pickupUser ?? null)
+const isPickupUser = computed(() => Boolean(currentUserId.value && pickupUser.value?.id === currentUserId.value))
 
-const isPickupUser = computed(() => {
-  const pickupUserId = detail.value?.pickupRecord?.pickupUser.id ?? detail.value?.order.pickupUser?.id
-  return Boolean(currentUserId.value && pickupUserId === currentUserId.value)
+const parseDeadline = computed(() => {
+  const value = order.value?.deadlineTime
+  if (!value) return null
+  const normalized = value.includes('T') ? value : value.replace(' ', 'T')
+  const time = Date.parse(normalized)
+  return Number.isNaN(time) ? null : time
 })
 
-const canLockOrder = computed(() => isCreator.value && detail.value?.order.status === 'CREATED')
+const remainingSeconds = computed(() => {
+  if (typeof order.value?.remainingSeconds === 'number') return order.value.remainingSeconds
+  if (!parseDeadline.value) return null
+  return Math.floor((parseDeadline.value - Date.now()) / 1000)
+})
 
-const canAssignPickup = computed(() => isCreator.value && Boolean(detail.value?.participants.length))
+const deadlineText = computed(() => {
+  if (!order.value) return '-'
+  if (order.value.status === 'FINISHED') return '已完成'
+  if (order.value.status === 'CANCELLED') return '已取消'
+  if (order.value.status === 'EXPIRED') return '已超时关闭'
+  if (remainingSeconds.value === null) return order.value.deadlineTime
+  if (remainingSeconds.value <= 0) return '已截止待处理'
+  const hours = Math.floor(remainingSeconds.value / 3600)
+  const minutes = Math.ceil((remainingSeconds.value % 3600) / 60)
+  return hours > 0 ? `${hours}小时${minutes}分钟` : `${minutes}分钟`
+})
 
+const discountThreshold = computed(() => Number(order.value?.minAmount ?? order.value?.discountThresholdAmount ?? 0))
+const discountGap = computed(() => Math.max(discountThreshold.value - Number(order.value?.originalTotalAmount ?? 0), 0))
+const discountPercent = computed(() => {
+  if (typeof order.value?.progressPercent === 'number') return Math.min(Math.max(order.value.progressPercent, 0), 100)
+  if (discountThreshold.value <= 0) return 100
+  return Math.min(Math.round((Number(order.value?.originalTotalAmount ?? 0) / discountThreshold.value) * 100), 100)
+})
+const paidCount = computed(() =>
+  detail.value?.participants.filter((participant) => ['PAID', 'CONFIRMED'].includes(participant.paymentStatus)).length ?? 0
+)
+const confirmedCount = computed(() =>
+  detail.value?.participants.filter((participant) => participant.paymentStatus === 'CONFIRMED').length ?? 0
+)
+const payableTotal = computed(() => Number(order.value?.payableTotalAmount ?? 0))
+const actualDiscount = computed(() => Number(order.value?.actualDiscountAmount ?? 0))
+
+const canJoinOrder = computed(() => {
+  if (isTerminal.value) return false
+  if (typeof permissions.value.canJoin === 'boolean') return permissions.value.canJoin
+  return Boolean(
+    order.value?.status === 'CREATED' &&
+      !currentParticipant.value &&
+      !isTerminal.value &&
+      order.value.participantCount < order.value.maxParticipants &&
+      (remainingSeconds.value === null || remainingSeconds.value > 0)
+  )
+})
+const canLockOrder = computed(() => {
+  if (isTerminal.value) return false
+  if (typeof permissions.value.canLock === 'boolean') return permissions.value.canLock
+  return Boolean(isCreator.value && order.value?.status === 'CREATED')
+})
+const canAssignPickup = computed(() => {
+  if (isTerminal.value) return false
+  if (typeof permissions.value.canAssignPickupUser === 'boolean') return permissions.value.canAssignPickupUser
+  return Boolean(isCreator.value && !isTerminal.value && detail.value?.participants.length)
+})
 const canUpdatePickup = computed(() => {
-  const status = detail.value?.pickupRecord?.pickupStatus
-  return Boolean((isCreator.value || isPickupUser.value) && status && status !== 'DISTRIBUTED')
+  if (isTerminal.value) return false
+  if (typeof permissions.value.canUpdatePickupStatus === 'boolean') return permissions.value.canUpdatePickupStatus
+  return Boolean((isCreator.value || isPickupUser.value) && pickupStatus.value && pickupStatus.value !== 'DISTRIBUTED' && !isTerminal.value)
 })
-
-const nextPickupStatus = computed(() => {
-  const status = detail.value?.pickupRecord?.pickupStatus
-  return status ? nextPickupStatusMap[status] : null
+const canCancelOrder = computed(() => {
+  if (!order.value || isTerminal.value) return false
+  if (!['CREATED', 'LOCKED'].includes(order.value.status)) return false
+  if (typeof permissions.value.canCancel === 'boolean') return permissions.value.canCancel
+  return isCreator.value
 })
-
-const discountGap = computed(() => {
-  const order = detail.value?.order
-  const threshold = order?.discountThresholdAmount ?? 0
-  if (!order || threshold <= 0) {
-    return 0
+const canViewEvents = computed(() => {
+  if (typeof permissions.value.canViewEvents === 'boolean') return permissions.value.canViewEvents
+  return Boolean(isCreator.value || currentParticipant.value || isPickupUser.value)
+})
+const eventsHiddenText = computed(() => {
+  if (canViewEvents.value) return ''
+  return '事件时间线仅对拼单发起人、参与者和取餐人可见。'
+})
+const cancelDisabledReason = computed(() => {
+  if (!order.value) return ''
+  if (isTerminal.value) return '终态拼单不可取消'
+  if (['ORDERED', 'DELIVERING', 'ARRIVED', 'PICKED_UP'].includes(order.value.status)) {
+    return '已进入履约阶段，普通取消已关闭，请通过事件记录异常并线下协商'
   }
-  return Math.max(threshold - order.originalTotalAmount, 0)
+  return ''
 })
 
-const reachedDiscount = computed(() => {
-  const order = detail.value?.order
-  const threshold = order?.discountThresholdAmount ?? 0
-  return Boolean(order && (threshold <= 0 || order.originalTotalAmount >= threshold))
-})
-
-const participantProgress = computed(() => {
-  const order = detail.value?.order
-  return order ? `${order.participantCount}/${order.maxParticipants}` : '-'
-})
-
+const nextPickupStatus = computed(() => (pickupStatus.value ? nextPickupStatusMap[pickupStatus.value] : null))
 const pickupStepActive = computed(() => {
-  const status = detail.value?.pickupRecord?.pickupStatus
-  if (status === 'DISTRIBUTED') return 3
-  if (status === 'PICKED_UP' || status === 'ARRIVED') return 2
-  if (status === 'WAITING_DELIVERY') return 1
+  if (!pickupStatus.value) return -1
+  return Math.max(
+    pickupFlowSteps.findIndex((step) => step.status === pickupStatus.value),
+    0
+  )
+})
+
+const flowActive = computed(() => {
+  const status = order.value?.status
+  if (status === 'FINISHED') return flowSteps.value.length
+  if (['ARRIVED', 'PICKED_UP'].includes(status ?? '') || pickupStatus.value) return 4
+  if (paidCount.value > 0 || ['ORDERED', 'DELIVERING'].includes(status ?? '')) return 3
+  if (status === 'LOCKED') return 2
+  if ((detail.value?.participants.length ?? 0) > 0) return 1
   return 0
+})
+
+const flowSteps = computed(() => [
+  { title: '发起', description: order.value?.creator.nickname ?? '-' },
+  { title: '加入', description: `${detail.value?.participants.length ?? 0}/${order.value?.maxParticipants ?? 0} 人` },
+  { title: '锁单', description: order.value?.lockedTime ? '已生成分摊' : '等待锁单' },
+  { title: '付款', description: `${paidCount.value}/${detail.value?.participants.length ?? 0} 已标记` },
+  { title: '取餐', description: pickupStatus.value ? pickupStatusText[pickupStatus.value] : '待指定' },
+  { title: '完成', description: order.value?.status === 'FINISHED' ? '已完成' : '未完成' }
+])
+
+const terminalNotice = computed(() => {
+  if (!order.value) return null
+  if (order.value.status === 'FINISHED') return { type: 'success', title: '拼单已完成', content: '餐品已分发，付款和取餐主流程已结束。' }
+  if (order.value.status === 'CANCELLED') {
+    const reason = order.value.cancelReason || '发起人已取消该拼单'
+    const time = order.value.cancelTime ? `取消时间：${order.value.cancelTime}` : '取消时间：暂无'
+    return { type: 'warning', title: '拼单已取消', content: `${reason}。${time}。不能继续加入、锁单、付款或推进取餐。` }
+  }
+  if (order.value.status === 'EXPIRED') {
+    const time = order.value.expiredTime ? `关闭时间：${order.value.expiredTime}` : '关闭时间：暂无'
+    return { type: 'info', title: '系统已超时关闭', content: `${order.value.expireReason || '系统因超过截止时间关闭该拼单'}。${time}。不能继续加入、锁单、付款或推进取餐。` }
+  }
+  return null
+})
+
+const inlineExceptionNotice = computed(() => {
+  if (isTerminal.value || !order.value) return null
+  if (cancelDisabledReason.value) return cancelDisabledReason.value
+  if (order.value.lastEventSummary) return order.value.lastEventSummary
+  return null
+})
+
+const eventTypeText: Record<string, string> = {
+  CANCELLED: '取消',
+  EXPIRED: '超时',
+  DELAY_REPORTED: '延迟',
+  MERCHANT_DELAY: '商家延迟',
+  DELIVERY_DELAY: '配送延迟',
+  PICKUP_EXCEPTION: '取餐异常',
+  ITEM_MISSING: '缺餐',
+  CONTACT_FAILED: '联系失败',
+  PAYMENT_DISPUTE: '付款争议',
+  NOTE: '备注'
+}
+
+const eventTagType = (event: GroupOrderEvent) => {
+  if (event.eventLevel === 'ERROR') return 'danger'
+  if (event.eventLevel === 'WARN') return 'warning'
+  if (['CANCELLED', 'EXPIRED'].includes(event.eventType)) return 'info'
+  return 'primary'
+}
+
+const timelineType = (event: GroupOrderEvent) => {
+  if (event.eventLevel === 'ERROR') return 'danger'
+  if (event.eventLevel === 'WARN') return 'warning'
+  if (event.eventType === 'EXPIRED') return 'info'
+  return 'primary'
+}
+
+const pickupOptions = computed(() => {
+  if (!detail.value) return []
+  const users = [detail.value.order.creator, ...detail.value.participants.map((participant) => participant.user)]
+  return users.filter((user, index, list) => list.findIndex((item) => item.id === user.id) === index)
 })
 
 const formatMealItems = (participant: Participant) =>
   participant.mealItems
-    .map((item) => `${item.itemName} x${item.quantity}（${formatMoney(item.unitPrice)}）`)
-    .join('、')
+    .map((item) => `${item.itemName} x${item.quantity} · ${formatMoney(item.subtotalAmount)}`)
+    .join(' / ')
+
+const canMarkPayment = (participant: Participant) => {
+  if (isTerminal.value) return false
+  if (typeof permissions.value.canMarkPayment === 'boolean' && !permissions.value.canMarkPayment) return false
+  return Boolean(
+    participant.user.id === currentUserId.value &&
+      participant.paymentStatus === 'UNPAID' &&
+      ['LOCKED', 'ORDERED', 'DELIVERING', 'ARRIVED'].includes(order.value?.status ?? '')
+  )
+}
+
+const canConfirmPayment = (participant: Participant) => {
+  if (isTerminal.value) return false
+  if (typeof permissions.value.canConfirmPayment === 'boolean' && !permissions.value.canConfirmPayment) return false
+  return Boolean(isCreator.value && participant.paymentStatus === 'PAID')
+}
+
+const isWaitingForLockToPay = (participant: Participant) =>
+  participant.user.id === currentUserId.value && participant.paymentStatus === 'UNPAID' && order.value?.status === 'CREATED'
+
+const loadEventsIfAllowed = async (id: number) => {
+  if (!canViewEvents.value) {
+    orderStore.clearEvents()
+    return
+  }
+  await orderStore.loadEvents(id)
+}
 
 const refreshCurrentDetail = async () => {
-  if (detail.value) {
-    await orderStore.loadDetail(detail.value.order.id)
-  }
+  if (!order.value) return
+  await orderStore.loadDetail(order.value.id)
+  await loadEventsIfAllowed(order.value.id)
 }
 
 const runOrderAction = async (key: string, successMessage: string, action: () => Promise<unknown>) => {
@@ -145,61 +322,63 @@ const runOrderAction = async (key: string, successMessage: string, action: () =>
   }
 }
 
-const canMarkPayment = (participant: Participant) =>
-  participant.user.id === currentUserId.value &&
-  participant.paymentStatus === 'UNPAID' &&
-  ['LOCKED', 'ORDERED', 'DELIVERING', 'ARRIVED'].includes(detail.value?.order.status ?? '')
-
-const isCurrentUserUnpaidParticipant = (participant: Participant) =>
-  participant.user.id === currentUserId.value && participant.paymentStatus === 'UNPAID'
-
-const isWaitingForLockToPay = (participant: Participant) =>
-  isCurrentUserUnpaidParticipant(participant) && detail.value?.order.status === 'CREATED'
-
-const canConfirmPayment = (participant: Participant) => isCreator.value && participant.paymentStatus === 'PAID'
-
-const hasParticipantAction = (participant: Participant) =>
-  canMarkPayment(participant) || canConfirmPayment(participant) || isWaitingForLockToPay(participant)
-
 const lockOrder = () => {
-  if (!detail.value) return
-  const targetOrderId = detail.value.order.id
+  if (!order.value) return
   return runOrderAction('lock', '锁单成功，金额分摊已刷新', () =>
-    orderStore.lockOrder(targetOrderId, {
+    orderStore.lockOrder(order.value!.id, {
       remark: lockForm.remark.trim() || undefined
     })
   )
 }
 
+const cancelOrder = async () => {
+  if (!order.value) return
+  if (!cancelReason.value.trim()) {
+    ElMessage.warning('请填写取消原因')
+    return
+  }
+  operationLoading.value = 'cancel'
+  try {
+    await orderStore.cancelOrder(order.value.id, {
+      cancelReason: cancelReason.value.trim()
+    })
+    ElMessage.success('拼单已取消')
+    cancelDialogVisible.value = false
+    cancelReason.value = ''
+    await refreshCurrentDetail()
+  } catch {
+    // 业务错误由 axios 统一展示，例如非发起人取消、已付款不可取消、履约中不可取消。
+  } finally {
+    operationLoading.value = ''
+  }
+}
+
 const markPayment = (participant: Participant) => {
-  if (!detail.value) return
-  const targetOrderId = detail.value.order.id
+  if (!order.value) return
   return runOrderAction(`mark-${participant.id}`, '已标记付款', () =>
-    orderStore.markPayment(targetOrderId, participant.id, {
+    orderStore.markPayment(order.value!.id, participant.id, {
       remark: '前端标记已付款'
     })
   )
 }
 
 const confirmPayment = (participant: Participant) => {
-  if (!detail.value) return
-  const targetOrderId = detail.value.order.id
+  if (!order.value) return
   return runOrderAction(`confirm-${participant.id}`, '已确认付款', () =>
-    orderStore.confirmPayment(targetOrderId, participant.id, {
+    orderStore.confirmPayment(order.value!.id, participant.id, {
       remark: '发起人确认付款'
     })
   )
 }
 
 const assignPickupUser = () => {
-  if (!detail.value || !pickupForm.pickupUserId) {
+  if (!order.value || !pickupForm.pickupUserId) {
     ElMessage.warning('请选择取餐人')
     return
   }
 
-  const targetOrderId = detail.value.order.id
   return runOrderAction('assign-pickup', '取餐人已指定', () =>
-    orderStore.assignPickupUser(targetOrderId, {
+    orderStore.assignPickupUser(order.value!.id, {
       pickupUserId: pickupForm.pickupUserId as number,
       pickupLocation: pickupForm.pickupLocation.trim() || undefined,
       estimatedArrivalTime: pickupForm.estimatedArrivalTime.trim() || undefined,
@@ -209,14 +388,10 @@ const assignPickupUser = () => {
 }
 
 const updatePickupStatus = () => {
-  if (!detail.value || !nextPickupStatus.value) {
-    return
-  }
-
-  const targetOrderId = detail.value.order.id
+  if (!order.value || !nextPickupStatus.value) return
   const targetStatus = nextPickupStatus.value
   return runOrderAction('pickup-status', `取餐状态已更新为${pickupStatusText[targetStatus]}`, () =>
-    orderStore.updatePickupStatus(targetOrderId, {
+    orderStore.updatePickupStatus(order.value!.id, {
       pickupStatus: targetStatus,
       pickupLocation: pickupStatusForm.pickupLocation.trim() || undefined,
       remark: pickupStatusForm.remark.trim() || undefined
@@ -226,11 +401,9 @@ const updatePickupStatus = () => {
 
 const submitJoin = async () => {
   const valid = await joinFormRef.value?.validate().catch(() => false)
-  if (!valid || !detail.value) {
-    return
-  }
+  if (!valid || !order.value) return
 
-  const targetOrderId = detail.value.order.id
+  const targetOrderId = order.value.id
   joinSubmitting.value = true
   try {
     await orderStore.joinOrder(targetOrderId, {
@@ -247,6 +420,7 @@ const submitJoin = async () => {
     ElMessage.success('加入拼单成功')
     joinFormRef.value?.resetFields()
     await orderStore.loadDetail(targetOrderId)
+    await loadEventsIfAllowed(targetOrderId)
   } catch {
     // 业务错误由 axios 统一展示后端返回的重复加入、锁定、满员、金额非法等提示。
   } finally {
@@ -254,9 +428,10 @@ const submitJoin = async () => {
   }
 }
 
-const loadCurrentDetail = () => {
+const loadCurrentDetail = async () => {
   if (Number.isFinite(orderId.value)) {
-    orderStore.loadDetail(orderId.value)
+    await orderStore.loadDetail(orderId.value)
+    await loadEventsIfAllowed(orderId.value)
   }
 }
 
@@ -266,11 +441,11 @@ watch(
   detail,
   (value) => {
     if (!value) return
-    pickupForm.pickupUserId = value.order.pickupUser?.id ?? value.pickupRecord?.pickupUser.id ?? value.participants[0]?.user.id
-    pickupForm.pickupLocation = value.pickupRecord?.pickupLocation ?? value.order.pickupLocation
+    pickupForm.pickupUserId = pickupUser.value?.id ?? value.participants[0]?.user.id ?? value.order.creator.id
+    pickupForm.pickupLocation = pickupLocation.value
     pickupForm.estimatedArrivalTime = value.pickupRecord?.estimatedArrivalTime ?? ''
     pickupForm.remark = value.pickupRecord?.remark ?? ''
-    pickupStatusForm.pickupLocation = value.pickupRecord?.pickupLocation ?? value.order.pickupLocation
+    pickupStatusForm.pickupLocation = pickupLocation.value
     pickupStatusForm.remark = value.pickupRecord?.remark ?? ''
   },
   { immediate: true }
@@ -278,137 +453,208 @@ watch(
 </script>
 
 <template>
-  <section class="page-stack" v-loading="orderStore.loading">
-    <template v-if="detail">
-      <div class="page-header">
-        <div>
-          <h1>{{ detail.order.title }}</h1>
-          <p>{{ detail.order.merchantName }} · {{ orderTypeText[detail.order.orderType] }}</p>
+  <section class="detail-flow-page" v-loading="orderStore.loading">
+    <template v-if="detail && order">
+      <div class="detail-hero">
+        <div class="detail-hero__main">
+          <div class="detail-hero__title">
+            <StatusTag :status="order.status" />
+            <h1>{{ order.title }}</h1>
+            <p>{{ order.merchantName }} · {{ orderTypeText[order.orderType] }}</p>
+          </div>
+          <div class="detail-hero__facts">
+            <span><ElIcon><Location /></ElIcon>{{ order.pickupLocation }}</span>
+            <span><ElIcon><AlarmClock /></ElIcon>{{ deadlineText }}</span>
+            <span><ElIcon><UserFilled /></ElIcon>{{ order.participantCount }}/{{ order.maxParticipants }} 人</span>
+          </div>
         </div>
-        <div class="header-actions">
-          <StatusTag :status="detail.order.status" />
-          <ElButton :icon="Refresh" @click="orderStore.loadDetail(detail.order.id)">刷新</ElButton>
+        <div class="detail-hero__actions">
+          <ElButton :icon="Refresh" @click="refreshCurrentDetail">刷新</ElButton>
+          <ElButton
+            v-if="canCancelOrder"
+            type="danger"
+            plain
+            :icon="Close"
+            @click="cancelDialogVisible = true"
+          >
+            取消拼单
+          </ElButton>
+          <ElTooltip v-else-if="cancelDisabledReason" :content="cancelDisabledReason" placement="bottom">
+            <ElButton type="danger" plain disabled :icon="Close">取消关闭</ElButton>
+          </ElTooltip>
+          <ElButton
+            v-if="canLockOrder"
+            type="primary"
+            :icon="Check"
+            :loading="operationLoading === 'lock'"
+            @click="lockOrder"
+          >
+            锁定拼单
+          </ElButton>
+          <ElButton v-else-if="canJoinOrder" type="primary" :icon="CirclePlus" @click="joinFormRef?.$el?.scrollIntoView({ behavior: 'smooth' })">
+            加入拼单
+          </ElButton>
         </div>
       </div>
 
-      <div class="detail-grid">
-        <div class="detail-panel detail-panel--wide">
-          <div class="panel-title">
-            <strong>拼单信息</strong>
-            <span>详情数据来自真实接口</span>
-          </div>
-          <ElDescriptions :column="2" border>
-            <ElDescriptionsItem label="发起人">
-              {{ detail.order.creator.nickname }}（{{ detail.order.creator.username }}）
-            </ElDescriptionsItem>
-            <ElDescriptionsItem label="人数">{{ participantProgress }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="截止时间">{{ detail.order.deadlineTime }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="取餐地点">{{ detail.order.pickupLocation }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="备注">{{ detail.order.remark || '无' }}</ElDescriptionsItem>
-            <ElDescriptionsItem label="付款状态">
-              {{ detail.participants.length ? detail.participants.map((item) => paymentStatusText[item.paymentStatus]).join(' / ') : '暂无成员' }}
-            </ElDescriptionsItem>
-          </ElDescriptions>
+      <ElAlert
+        v-if="terminalNotice"
+        class="terminal-alert"
+        :type="terminalNotice.type"
+        :title="terminalNotice.title"
+        :description="terminalNotice.content"
+        show-icon
+        :closable="false"
+      />
+      <ElAlert
+        v-else-if="inlineExceptionNotice"
+        class="terminal-alert"
+        type="warning"
+        :title="inlineExceptionNotice"
+        show-icon
+        :closable="false"
+      />
 
-          <div class="panel-title panel-title--spaced">
-            <strong>金额分摊</strong>
-            <span>当前金额与满减进度实时刷新</span>
-          </div>
-          <div class="stat-strip stat-strip--compact">
-            <AmountStat label="原始总额" :amount="detail.order.originalTotalAmount" />
-            <AmountStat label="实际优惠" :amount="detail.order.actualDiscountAmount" tone="green" />
-            <AmountStat label="应付总额" :amount="detail.order.payableTotalAmount" tone="blue" />
-            <AmountStat label="满减差额" :amount="discountGap" tone="orange" />
-          </div>
-          <div class="discount-line">
-            <span>满减门槛：{{ formatMoney(detail.order.discountThresholdAmount) }}</span>
-            <ElTag :type="reachedDiscount ? 'success' : 'warning'">
-              {{ reachedDiscount ? '已达到满减' : '未达到满减' }}
-            </ElTag>
-          </div>
+      <div class="flow-panel">
+        <ElSteps :active="flowActive" finish-status="success" align-center>
+          <ElStep v-for="step in flowSteps" :key="step.title" :title="step.title" :description="step.description" />
+        </ElSteps>
+      </div>
 
-          <div class="panel-title panel-title--spaced">
-            <strong>参与者与餐品明细</strong>
-            <span>共 {{ detail.participants.length }} 人</span>
-          </div>
-          <ElTable :data="detail.participants" stripe>
-            <ElTableColumn label="成员" min-width="120">
-              <template #default="{ row }">
-                <strong>{{ row.user.nickname }}</strong>
-                <small class="muted-text">{{ row.user.username }}</small>
-              </template>
-            </ElTableColumn>
-            <ElTableColumn label="餐品" min-width="180">
-              <template #default="{ row }">
-                {{ formatMealItems(row) }}
-                <small v-if="row.remark" class="muted-text">备注：{{ row.remark }}</small>
-              </template>
-            </ElTableColumn>
-            <ElTableColumn label="原价" width="110">
-              <template #default="{ row }">{{ formatMoney(row.originalAmount) }}</template>
-            </ElTableColumn>
-            <ElTableColumn label="优惠分摊" width="110">
-              <template #default="{ row }">{{ formatMoney(row.discountShareAmount) }}</template>
-            </ElTableColumn>
-            <ElTableColumn label="应付" width="110">
-              <template #default="{ row }">{{ formatMoney(row.payableAmount) }}</template>
-            </ElTableColumn>
-            <ElTableColumn label="付款" width="120">
-              <template #default="{ row }">
-                <StatusTag :status="row.paymentStatus" type="payment" />
-              </template>
-            </ElTableColumn>
-            <ElTableColumn label="操作" width="190">
-              <template #default="{ row }">
-                <div class="table-actions">
+      <div class="detail-layout">
+        <main class="detail-main">
+          <section class="detail-section amount-section">
+            <div class="section-title">
+              <div>
+                <strong>金额与满减</strong>
+                <span>锁单后由后端固化优惠分摊</span>
+              </div>
+              <ElTag :type="discountGap <= 0 ? 'success' : 'warning'">
+                {{ discountGap <= 0 ? '已达到满减' : `还差 ${formatMoney(discountGap)}` }}
+              </ElTag>
+            </div>
+            <div class="amount-grid">
+              <div class="amount-tile">
+                <span>原始总额</span>
+                <strong>{{ formatMoney(order.originalTotalAmount) }}</strong>
+              </div>
+              <div class="amount-tile amount-tile--green">
+                <span>已省</span>
+                <strong>{{ formatMoney(actualDiscount) }}</strong>
+              </div>
+              <div class="amount-tile amount-tile--blue">
+                <span>应付总额</span>
+                <strong>{{ formatMoney(payableTotal) }}</strong>
+              </div>
+              <div class="amount-tile amount-tile--orange">
+                <span>确认付款</span>
+                <strong>{{ confirmedCount }}/{{ detail.participants.length }}</strong>
+              </div>
+            </div>
+            <div class="discount-progress">
+              <span>满减门槛 {{ formatMoney(discountThreshold) }}</span>
+              <ElProgress :percentage="discountPercent" :stroke-width="10" color="#42b883" />
+            </div>
+          </section>
+
+          <section class="detail-section">
+            <div class="section-title">
+              <div>
+                <strong>成员金额与餐品</strong>
+                <span>共 {{ detail.participants.length }} 人参与</span>
+              </div>
+            </div>
+            <div class="participant-list">
+              <article v-for="participant in detail.participants" :key="participant.id" class="participant-card">
+                <div class="participant-card__head">
+                  <div>
+                    <strong>{{ participant.user.nickname }}</strong>
+                    <span>{{ participant.user.username }}</span>
+                  </div>
+                  <StatusTag :status="participant.paymentStatus" type="payment" />
+                </div>
+                <div class="meal-line">
+                  <ElIcon><Dish /></ElIcon>
+                  <span>{{ formatMealItems(participant) || '暂无餐品' }}</span>
+                </div>
+                <div class="participant-money">
+                  <span>原价 {{ formatMoney(participant.originalAmount) }}</span>
+                  <span>优惠 {{ formatMoney(participant.discountShareAmount) }}</span>
+                  <strong>应付 {{ formatMoney(participant.payableAmount) }}</strong>
+                </div>
+                <div v-if="participant.remark" class="participant-remark">备注：{{ participant.remark }}</div>
+                <div class="participant-actions">
                   <ElButton
-                    v-if="canMarkPayment(row)"
+                    v-if="canMarkPayment(participant)"
                     size="small"
                     type="primary"
-                    :loading="operationLoading === `mark-${row.id}`"
-                    @click="markPayment(row)"
+                    :loading="operationLoading === `mark-${participant.id}`"
+                    @click="markPayment(participant)"
                   >
                     标记付款
                   </ElButton>
                   <ElButton
-                    v-if="canConfirmPayment(row)"
+                    v-if="canConfirmPayment(participant)"
                     size="small"
                     type="success"
-                    :loading="operationLoading === `confirm-${row.id}`"
-                    @click="confirmPayment(row)"
+                    :loading="operationLoading === `confirm-${participant.id}`"
+                    @click="confirmPayment(participant)"
                   >
                     确认付款
                   </ElButton>
-                  <ElTooltip
-                    v-if="isWaitingForLockToPay(row)"
-                    content="锁单生成应付金额后才能标记付款"
-                    placement="top"
-                  >
+                  <ElTooltip v-if="isWaitingForLockToPay(participant)" content="锁单生成应付金额后才能标记付款" placement="top">
                     <ElButton size="small" disabled>待锁单</ElButton>
                   </ElTooltip>
-                  <span v-if="!hasParticipantAction(row)" class="muted-text">无可用操作</span>
+                  <span v-if="!canMarkPayment(participant) && !canConfirmPayment(participant) && !isWaitingForLockToPay(participant)" class="muted-text">
+                    {{ paymentStatusText[participant.paymentStatus] }}
+                  </span>
                 </div>
-              </template>
-            </ElTableColumn>
-          </ElTable>
-
-          <div v-if="canLockOrder" class="inline-action-panel">
-            <div>
-              <strong>锁定拼单</strong>
-              <span>锁单后后端生成优惠分摊和成员应付金额</span>
+              </article>
             </div>
-            <ElInput v-model="lockForm.remark" placeholder="锁单备注，可选" />
-            <ElButton type="primary" :icon="Check" :loading="operationLoading === 'lock'" @click="lockOrder">
-              锁定拼单
-            </ElButton>
-          </div>
-        </div>
+          </section>
 
-        <aside class="side-stack">
-          <div class="detail-panel">
-            <div class="panel-title">
-              <strong>加入拼单</strong>
-              <span>提交后刷新详情</span>
+          <section class="detail-section">
+            <div class="section-title">
+              <div>
+                <strong>事件时间线</strong>
+                <span>取消、超时、延迟和异常事件只做记录，不替代主状态</span>
+              </div>
+              <ElButton v-if="canViewEvents" size="small" :loading="orderStore.eventsLoading" @click="loadEventsIfAllowed(order.id)">刷新事件</ElButton>
+            </div>
+            <ElAlert
+              v-if="!canViewEvents"
+              type="info"
+              :title="eventsHiddenText"
+              show-icon
+              :closable="false"
+            />
+            <ElTimeline v-else-if="events.length" class="event-timeline">
+              <ElTimelineItem
+                v-for="event in events"
+                :key="event.id"
+                :timestamp="event.eventTime"
+                :type="timelineType(event)"
+              >
+                <div class="event-title">
+                  <strong>{{ event.title }}</strong>
+                  <ElTag size="small" :type="eventTagType(event)" effect="light">
+                    {{ eventTypeText[event.eventType] ?? event.eventType }}
+                  </ElTag>
+                </div>
+                <p>{{ event.content }}</p>
+              </ElTimelineItem>
+            </ElTimeline>
+            <ElEmpty v-else description="暂无事件记录" />
+          </section>
+        </main>
+
+        <aside class="detail-side">
+          <section v-if="canJoinOrder" class="detail-section join-section">
+            <div class="section-title">
+              <div>
+                <strong>加入拼单</strong>
+                <span>提交后刷新详情</span>
+              </div>
             </div>
             <ElForm ref="joinFormRef" :model="joinForm" :rules="joinRules" label-position="top">
               <ElFormItem label="餐品名称" prop="itemName">
@@ -430,86 +676,515 @@ watch(
               </ElFormItem>
               <ElButton type="primary" :loading="joinSubmitting" @click="submitJoin">提交加入</ElButton>
             </ElForm>
-          </div>
+          </section>
 
-          <div class="detail-panel">
-            <div class="panel-title">
-              <strong>取餐协同</strong>
-              <span>指定取餐人后推进状态</span>
-            </div>
-            <div class="pickup-card">
-              <ElIcon><UserFilled /></ElIcon>
+          <section class="detail-section pickup-section">
+            <div class="section-title">
               <div>
+                <strong>取餐协同</strong>
+                <span>发起人或取餐人推进状态</span>
+              </div>
+            </div>
+            <div class="pickup-summary">
+              <div>
+                <ElIcon><UserFilled /></ElIcon>
                 <span>取餐人</span>
-                <strong>{{ detail.order.pickupUser?.nickname ?? '暂未指定' }}</strong>
+                <strong>{{ pickupUser?.nickname ?? '暂未指定' }}</strong>
               </div>
-            </div>
-            <div class="pickup-card">
-              <ElIcon><Location /></ElIcon>
               <div>
-                <span>取餐地点</span>
-                <strong>{{ detail.pickupRecord?.pickupLocation ?? detail.order.pickupLocation }}</strong>
+                <ElIcon><Location /></ElIcon>
+                <span>取餐点</span>
+                <strong>{{ pickupLocation || order.pickupLocation }}</strong>
               </div>
-            </div>
-            <div class="pickup-card">
-              <ElIcon><Money /></ElIcon>
               <div>
-                <span>当前取餐状态</span>
-                <strong>
-                  {{ detail.pickupRecord ? pickupStatusText[detail.pickupRecord.pickupStatus] : '待指定' }}
-                </strong>
+                <ElIcon><Tickets /></ElIcon>
+                <span>取餐状态</span>
+                <strong>{{ pickupStatus ? pickupStatusText[pickupStatus] : '待指定' }}</strong>
               </div>
             </div>
-            <ElSteps
-              v-if="detail.pickupRecord"
-              class="pickup-steps"
-              :active="pickupStepActive"
-              :space="64"
-              finish-status="success"
-              direction="vertical"
-            >
-              <ElStep title="等待下单" />
-              <ElStep title="配送/到达" />
-              <ElStep title="取餐分发" />
-            </ElSteps>
+
+            <div v-if="pickupStatus" class="pickup-flow">
+              <div
+                v-for="(step, index) in pickupFlowSteps"
+                :key="step.status"
+                class="pickup-flow__step"
+                :class="{
+                  'pickup-flow__step--done': index < pickupStepActive,
+                  'pickup-flow__step--current': index === pickupStepActive,
+                  'pickup-flow__step--pending': index > pickupStepActive
+                }"
+              >
+                <span class="pickup-flow__index">{{ index + 1 }}</span>
+                <span class="pickup-flow__label">{{ step.label }}</span>
+              </div>
+            </div>
             <div v-else class="pickup-placeholder">指定取餐人后显示取餐进度</div>
 
             <div v-if="canAssignPickup" class="pickup-action-panel">
-              <div class="panel-title panel-title--compact">
-                <strong>指定取餐人</strong>
-                <span>取餐人必须是参与者</span>
-              </div>
+              <strong>指定取餐人</strong>
               <ElSelect v-model="pickupForm.pickupUserId" placeholder="请选择取餐人">
                 <ElOption
-                  v-for="participant in detail.participants"
-                  :key="participant.id"
-                  :label="`${participant.user.nickname}（${participant.user.username}）`"
-                  :value="participant.user.id"
+                  v-for="user in pickupOptions"
+                  :key="user.id"
+                  :label="`${user.nickname}（${user.username}）`"
+                  :value="user.id"
                 />
               </ElSelect>
               <ElInput v-model="pickupForm.pickupLocation" placeholder="取餐地点" />
               <ElInput v-model="pickupForm.estimatedArrivalTime" placeholder="预计到达时间，可选" />
               <ElInput v-model="pickupForm.remark" type="textarea" :rows="2" placeholder="取餐备注，可选" />
-              <ElButton type="primary" :loading="operationLoading === 'assign-pickup'" @click="assignPickupUser">
-                指定取餐人
-              </ElButton>
+              <ElButton type="primary" :loading="operationLoading === 'assign-pickup'" @click="assignPickupUser">指定取餐人</ElButton>
             </div>
 
             <div v-if="canUpdatePickup && nextPickupStatus" class="pickup-action-panel">
-              <div class="panel-title panel-title--compact">
-                <strong>更新取餐状态</strong>
-                <span>下一步：{{ pickupStatusText[nextPickupStatus] }}</span>
-              </div>
+              <strong>推进取餐状态：{{ pickupStatusText[nextPickupStatus] }}</strong>
               <ElInput v-model="pickupStatusForm.pickupLocation" placeholder="当前地点，可选" />
               <ElInput v-model="pickupStatusForm.remark" type="textarea" :rows="2" placeholder="状态备注，可选" />
               <ElButton type="success" :loading="operationLoading === 'pickup-status'" @click="updatePickupStatus">
                 更新为{{ pickupStatusText[nextPickupStatus] }}
               </ElButton>
             </div>
-          </div>
+          </section>
+
+          <section v-if="canLockOrder" class="detail-section lock-section">
+            <div class="section-title">
+              <div>
+                <strong>锁单确认</strong>
+                <span>锁定后不能继续加入</span>
+              </div>
+            </div>
+            <ElInput v-model="lockForm.remark" placeholder="锁单备注，可选" />
+            <ElButton type="primary" :icon="Check" :loading="operationLoading === 'lock'" @click="lockOrder">锁定拼单</ElButton>
+          </section>
+
+          <section v-if="!canJoinOrder && !canLockOrder && !canCancelOrder && !canAssignPickup && !canUpdatePickup" class="detail-section next-action">
+            <strong>{{ isTerminal ? '主流程已结束' : '当前暂无可执行操作' }}</strong>
+            <span>{{ isTerminal ? orderStatusText[order.status] : '可查看成员、付款、取餐和事件进展。' }}</span>
+          </section>
         </aside>
       </div>
+
+      <ElDialog v-model="cancelDialogVisible" title="取消拼单" width="420px">
+        <div class="cancel-dialog">
+          <ElAlert
+            type="warning"
+            title="取消后不能继续加入、锁单、付款或推进取餐"
+            show-icon
+            :closable="false"
+          />
+          <ElInput
+            v-model="cancelReason"
+            type="textarea"
+            :rows="4"
+            maxlength="120"
+            show-word-limit
+            placeholder="请填写取消原因，例如：人数不够，先取消"
+          />
+        </div>
+        <template #footer>
+          <ElButton @click="cancelDialogVisible = false">返回</ElButton>
+          <ElButton type="danger" :loading="operationLoading === 'cancel'" @click="cancelOrder">确认取消</ElButton>
+        </template>
+      </ElDialog>
     </template>
     <ElEmpty v-else description="未找到拼单详情" />
   </section>
 </template>
+
+<style scoped>
+.detail-flow-page {
+  display: grid;
+  gap: 20px;
+  max-width: 1220px;
+  margin: 0 auto;
+}
+
+.detail-flow-page::before {
+  content: "";
+  position: fixed;
+  inset: 68px 0 0 232px;
+  z-index: -1;
+  background:
+    radial-gradient(circle at 15% 14%, rgba(86, 204, 242, 0.16), transparent 28%),
+    radial-gradient(circle at 82% 9%, rgba(255, 163, 177, 0.2), transparent 30%),
+    linear-gradient(135deg, #f6fbff 0%, #fff8f5 100%);
+}
+
+.detail-hero,
+.flow-panel,
+.detail-section {
+  border: 1px solid rgba(255, 255, 255, 0.74);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 20px 52px rgba(31, 41, 55, 0.1);
+  backdrop-filter: blur(14px);
+}
+
+.detail-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 26px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(86, 204, 242, 0.34), transparent 26%),
+    radial-gradient(circle at 96% 88%, rgba(255, 163, 177, 0.34), transparent 28%),
+    linear-gradient(135deg, rgba(238, 248, 255, 0.96), rgba(255, 246, 247, 0.92));
+}
+
+.detail-hero__title h1 {
+  margin: 12px 0 8px;
+  font-size: 32px;
+  line-height: 1.2;
+}
+
+.detail-hero__title p,
+.detail-hero__facts,
+.section-title span,
+.next-action span,
+.muted-text {
+  color: #667085;
+}
+
+.detail-hero__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-top: 16px;
+}
+
+.detail-hero__facts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.detail-hero__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.terminal-alert {
+  border-radius: 14px;
+}
+
+.flow-panel {
+  padding: 20px;
+}
+
+.detail-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 18px;
+}
+
+.detail-main,
+.detail-side {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+
+.detail-section {
+  padding: 18px;
+}
+
+.section-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.section-title strong {
+  display: block;
+  font-size: 18px;
+}
+
+.section-title span {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.amount-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.amount-tile {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 14px;
+  background: #f8fafc;
+}
+
+.amount-tile span {
+  color: #667085;
+  font-size: 13px;
+}
+
+.amount-tile strong {
+  color: #142033;
+  font-size: 24px;
+}
+
+.amount-tile--green strong {
+  color: #21a67a;
+}
+
+.amount-tile--blue strong {
+  color: #2f7cf6;
+}
+
+.amount-tile--orange strong {
+  color: #f59f00;
+}
+
+.discount-progress {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  color: #667085;
+}
+
+.participant-list {
+  display: grid;
+  gap: 12px;
+}
+
+.participant-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #e3e8ef;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.participant-card__head,
+.participant-money,
+.participant-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.participant-card__head span,
+.participant-remark {
+  display: block;
+  margin-top: 4px;
+  color: #667085;
+  font-size: 13px;
+}
+
+.meal-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #142033;
+}
+
+.meal-line .el-icon {
+  margin-top: 2px;
+  color: #2f7cf6;
+}
+
+.participant-money span {
+  color: #667085;
+}
+
+.participant-money strong {
+  color: #2f7cf6;
+  font-size: 18px;
+}
+
+.event-timeline p {
+  margin: 6px 0 0;
+  color: #667085;
+}
+
+.event-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.inline-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.join-section .el-button,
+.lock-section .el-button,
+.pickup-action-panel .el-button {
+  width: 100%;
+}
+
+.pickup-summary {
+  display: grid;
+  gap: 10px;
+}
+
+.pickup-summary > div {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  column-gap: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.pickup-summary .el-icon {
+  grid-row: span 2;
+  align-self: center;
+  color: #2f7cf6;
+  font-size: 20px;
+}
+
+.pickup-summary span {
+  color: #667085;
+  font-size: 13px;
+}
+
+.pickup-summary strong {
+  margin-top: 2px;
+}
+
+.pickup-flow {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #e5edf7;
+  border-radius: 14px;
+  background: #fbfdff;
+}
+
+.pickup-flow__step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  color: #98a2b3;
+  font-weight: 700;
+}
+
+.pickup-flow__step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 13px;
+  top: 28px;
+  width: 2px;
+  height: 14px;
+  border-radius: 999px;
+  background: #d8e0ea;
+}
+
+.pickup-flow__step--done,
+.pickup-flow__step--current {
+  color: #142033;
+}
+
+.pickup-flow__step--done::after {
+  background: #42b883;
+}
+
+.pickup-flow__index {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 2px solid #d8e0ea;
+  border-radius: 999px;
+  background: #fff;
+  color: inherit;
+  font-size: 13px;
+}
+
+.pickup-flow__step--done .pickup-flow__index {
+  border-color: #42b883;
+  background: #42b883;
+  color: #fff;
+}
+
+.pickup-flow__step--current .pickup-flow__index {
+  border-color: #2f7cf6;
+  background: #eff6ff;
+  color: #2f7cf6;
+}
+
+.pickup-flow__label {
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.pickup-placeholder,
+.next-action {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px dashed #d8e0ea;
+  border-radius: 12px;
+  color: #667085;
+  background: #f8fafc;
+}
+
+.pickup-action-panel,
+.lock-section {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.cancel-dialog {
+  display: grid;
+  gap: 14px;
+}
+
+@media (max-width: 1100px) {
+  .detail-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .detail-flow-page::before {
+    inset-left: 0;
+  }
+
+  .amount-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .detail-hero {
+    flex-direction: column;
+  }
+
+  .detail-hero__title h1 {
+    font-size: 26px;
+  }
+
+  .amount-grid,
+  .inline-fields {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

@@ -3,6 +3,8 @@ package com.campus.pinhaofan.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.campus.pinhaofan.common.AuthTokenUtil;
+import com.campus.pinhaofan.dto.CancelGroupOrderRequest;
+import com.campus.pinhaofan.dto.CreateGroupOrderEventRequest;
 import com.campus.pinhaofan.dto.CreateGroupOrderRequest;
 import com.campus.pinhaofan.dto.JoinGroupOrderRequest;
 import com.campus.pinhaofan.dto.LockGroupOrderRequest;
@@ -10,6 +12,7 @@ import com.campus.pinhaofan.dto.PaymentRequest;
 import com.campus.pinhaofan.dto.PickupAssigneeRequest;
 import com.campus.pinhaofan.dto.PickupStatusUpdateRequest;
 import com.campus.pinhaofan.entity.GroupOrder;
+import com.campus.pinhaofan.entity.GroupOrderEvent;
 import com.campus.pinhaofan.entity.MealItem;
 import com.campus.pinhaofan.entity.OrderParticipant;
 import com.campus.pinhaofan.entity.OrderStatusLog;
@@ -20,6 +23,7 @@ import com.campus.pinhaofan.enums.GroupOrderStatus;
 import com.campus.pinhaofan.enums.PaymentStatus;
 import com.campus.pinhaofan.enums.PickupStatus;
 import com.campus.pinhaofan.exception.BusinessException;
+import com.campus.pinhaofan.mapper.GroupOrderEventMapper;
 import com.campus.pinhaofan.mapper.GroupOrderMapper;
 import com.campus.pinhaofan.mapper.MealItemMapper;
 import com.campus.pinhaofan.mapper.OrderParticipantMapper;
@@ -27,8 +31,12 @@ import com.campus.pinhaofan.mapper.OrderStatusLogMapper;
 import com.campus.pinhaofan.mapper.PaymentRecordMapper;
 import com.campus.pinhaofan.mapper.PickupRecordMapper;
 import com.campus.pinhaofan.mapper.UserMapper;
+import com.campus.pinhaofan.messaging.GroupOrderTimeoutMessagePublisher;
 import com.campus.pinhaofan.service.impl.GroupOrderServiceImpl;
+import com.campus.pinhaofan.vo.CancelGroupOrderVO;
 import com.campus.pinhaofan.vo.GroupOrderDetailVO;
+import com.campus.pinhaofan.vo.GroupOrderEventVO;
+import com.campus.pinhaofan.vo.GroupOrderTimeoutCheckVO;
 import com.campus.pinhaofan.vo.GroupOrderVO;
 import com.campus.pinhaofan.vo.JoinGroupOrderVO;
 import com.campus.pinhaofan.vo.LockAllocationVO;
@@ -75,6 +83,8 @@ class GroupOrderServiceImplTest {
     @Mock
     private GroupOrderMapper groupOrderMapper;
     @Mock
+    private GroupOrderEventMapper groupOrderEventMapper;
+    @Mock
     private OrderParticipantMapper orderParticipantMapper;
     @Mock
     private MealItemMapper mealItemMapper;
@@ -84,6 +94,8 @@ class GroupOrderServiceImplTest {
     private OrderStatusLogMapper orderStatusLogMapper;
     @Mock
     private PaymentRecordMapper paymentRecordMapper;
+    @Mock
+    private GroupOrderTimeoutMessagePublisher groupOrderTimeoutMessagePublisher;
 
     private AuthTokenUtil authTokenUtil;
     private GroupOrderService groupOrderService;
@@ -95,11 +107,13 @@ class GroupOrderServiceImplTest {
                 authTokenUtil,
                 userMapper,
                 groupOrderMapper,
+                groupOrderEventMapper,
                 orderParticipantMapper,
                 mealItemMapper,
                 pickupRecordMapper,
                 orderStatusLogMapper,
-                paymentRecordMapper
+                paymentRecordMapper,
+                groupOrderTimeoutMessagePublisher
         );
     }
 
@@ -138,6 +152,11 @@ class GroupOrderServiceImplTest {
         ArgumentCaptor<LambdaQueryWrapper<GroupOrder>> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
         verify(groupOrderMapper).selectPage(any(), wrapperCaptor.capture());
         assertThat(wrapperCaptor.getValue().getCustomSqlSegment())
+                .contains("status =")
+                .contains("deadline_time")
+                .contains("participant_count < max_participants")
+                .contains("creator_id")
+                .contains("pickup_user_id")
                 .contains("CASE WHEN status IN ('CREATED','LOCKED','ORDERED','DELIVERING','ARRIVED','PICKED_UP')")
                 .contains("create_time DESC");
     }
@@ -163,6 +182,9 @@ class GroupOrderServiceImplTest {
         verify(groupOrderMapper).selectPage(any(), wrapperCaptor.capture());
         String sqlSegment = wrapperCaptor.getValue().getCustomSqlSegment();
         assertThat(sqlSegment)
+                .contains("status =")
+                .contains("deadline_time")
+                .contains("participant_count < max_participants")
                 .contains("CASE WHEN status IN ('CREATED','LOCKED','ORDERED','DELIVERING','ARRIVED','PICKED_UP')")
                 .contains("THEN 0 ELSE 1 END ASC")
                 .contains("create_time DESC");
@@ -218,6 +240,89 @@ class GroupOrderServiceImplTest {
         verify(orderStatusLogMapper).insert(logCaptor.capture());
         assertThat(logCaptor.getValue().getAfterStatus()).isEqualTo("CREATED");
         assertThat(logCaptor.getValue().getActionType()).isEqualTo("CREATE_ORDER");
+        verify(groupOrderTimeoutMessagePublisher).sendTimeoutMessage(any(), any());
+    }
+
+    @Test
+    void createGroupOrderWithCreatorItemsCreatesCreatorParticipantMealsAndUpdatesAmount() {
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
+        doAnswer(invocation -> {
+            GroupOrder order = invocation.getArgument(0);
+            order.setId(ORDER_ID);
+            return 1;
+        }).when(groupOrderMapper).insert(any(GroupOrder.class));
+        doAnswer(invocation -> {
+            OrderParticipant participant = invocation.getArgument(0);
+            participant.setId(3001L);
+            return 1;
+        }).when(orderParticipantMapper).insert(any(OrderParticipant.class));
+        doAnswer(invocation -> {
+            MealItem mealItem = invocation.getArgument(0);
+            mealItem.setId(mealItem.getItemName().equals("牛肉饭") ? 4001L : 4002L);
+            return 1;
+        }).when(mealItemMapper).insert(any(MealItem.class));
+
+        CreateGroupOrderRequest request = createOrderRequest("2099-05-27 18:30:00");
+        request.setCreatorItems(List.of(
+                mealItemRequest("牛肉饭", 1, "28.00"),
+                mealItemRequest("柠檬茶", 2, "12.50")
+        ));
+
+        GroupOrderVO result = groupOrderService.createGroupOrder(authorization(CREATOR_ID), request);
+
+        assertThat(result.getParticipantCount()).isEqualTo(1);
+        assertThat(result.getOriginalTotalAmount()).isEqualByComparingTo("53.00");
+        assertThat(result.getPayableTotalAmount()).isEqualByComparingTo("53.00");
+        assertThat(result.getActualDiscountAmount()).isEqualByComparingTo("0.00");
+
+        ArgumentCaptor<OrderParticipant> participantCaptor = ArgumentCaptor.forClass(OrderParticipant.class);
+        verify(orderParticipantMapper).insert(participantCaptor.capture());
+        OrderParticipant participant = participantCaptor.getValue();
+        assertThat(participant.getGroupOrderId()).isEqualTo(ORDER_ID);
+        assertThat(participant.getUserId()).isEqualTo(CREATOR_ID);
+        assertThat(participant.getOriginalAmount()).isEqualByComparingTo("53.00");
+        assertThat(participant.getPayableAmount()).isEqualByComparingTo("53.00");
+        assertThat(participant.getPaymentStatus()).isEqualTo(PaymentStatus.UNPAID.getValue());
+
+        ArgumentCaptor<MealItem> mealCaptor = ArgumentCaptor.forClass(MealItem.class);
+        verify(mealItemMapper, times(2)).insert(mealCaptor.capture());
+        assertThat(mealCaptor.getAllValues())
+                .extracting(MealItem::getItemName)
+                .containsExactly("牛肉饭", "柠檬茶");
+        assertThat(mealCaptor.getAllValues())
+                .extracting(MealItem::getSubtotalAmount)
+                .containsExactly(new BigDecimal("28.00"), new BigDecimal("25.00"));
+
+        ArgumentCaptor<GroupOrder> orderCaptor = ArgumentCaptor.forClass(GroupOrder.class);
+        verify(groupOrderMapper).updateById(orderCaptor.capture());
+        GroupOrder updatedOrder = orderCaptor.getValue();
+        assertThat(updatedOrder.getParticipantCount()).isEqualTo(1);
+        assertThat(updatedOrder.getOriginalTotalAmount()).isEqualByComparingTo("53.00");
+        assertThat(updatedOrder.getPayableTotalAmount()).isEqualByComparingTo("53.00");
+    }
+
+    @Test
+    void createGroupOrderAllowsEmptyCreatorItems() {
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
+        doAnswer(invocation -> {
+            GroupOrder order = invocation.getArgument(0);
+            order.setId(ORDER_ID);
+            return 1;
+        }).when(groupOrderMapper).insert(any(GroupOrder.class));
+
+        CreateGroupOrderRequest request = createOrderRequest("2099-05-27 18:30:00");
+        request.setCreatorItems(List.of());
+
+        GroupOrderVO result = groupOrderService.createGroupOrder(authorization(CREATOR_ID), request);
+
+        assertThat(result.getParticipantCount()).isZero();
+        assertThat(result.getOriginalTotalAmount()).isEqualByComparingTo("0.00");
+        assertThat(result.getPayableTotalAmount()).isEqualByComparingTo("0.00");
+        verify(orderParticipantMapper, never()).insert(any(OrderParticipant.class));
+        verify(mealItemMapper, never()).insert(any(MealItem.class));
+        verify(groupOrderMapper, never()).updateById(any(GroupOrder.class));
     }
 
     @Test
@@ -255,6 +360,58 @@ class GroupOrderServiceImplTest {
         assertThat(result.getParticipants().get(1).getUser().getUsername()).isEqualTo("20260002");
         assertThat(result.getPickupRecord().getPickupUser().getId()).isEqualTo(MEMBER_ID);
         assertThat(result.getPickupStatus()).isEqualTo("WAITING_ORDER");
+        assertThat(result.getPermissions().getCanJoin()).isFalse();
+        assertThat(result.getPermissions().getCanLock()).isFalse();
+        assertThat(result.getPermissions().getCanCancel()).isTrue();
+        assertThat(result.getPermissions().getCanCreateEvent()).isTrue();
+        assertThat(result.getPermissions().getCanViewEvents()).isTrue();
+    }
+
+    @Test
+    void getGroupOrderDetailAllowsUnrelatedUserToViewCreatedOrderWithLimitedPermissions() {
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        User outsider = user(THIRD_USER_ID, "20260003", "小周");
+        GroupOrder order = baseOrder();
+        order.setStatus(GroupOrderStatus.CREATED.getValue());
+        order.setParticipantCount(0);
+        order.setMaxParticipants(2);
+
+        when(userMapper.selectById(THIRD_USER_ID)).thenReturn(outsider);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+        when(orderParticipantMapper.selectList(any())).thenReturn(List.of());
+        when(mealItemMapper.selectList(any())).thenReturn(List.of());
+        when(pickupRecordMapper.selectOne(any())).thenReturn(null);
+        when(userMapper.selectBatchIds(anyCollection())).thenReturn(List.of(creator));
+
+        GroupOrderDetailVO result = groupOrderService.getGroupOrderDetail(authorization(THIRD_USER_ID), ORDER_ID);
+
+        assertThat(result.getOrder().getId()).isEqualTo(ORDER_ID);
+        assertThat(result.getParticipants()).isEmpty();
+        assertThat(result.getPermissions().getCanJoin()).isTrue();
+        assertThat(result.getPermissions().getCanViewEvents()).isFalse();
+        assertThat(result.getPermissions().getCanCreateEvent()).isFalse();
+        assertThat(result.getPermissions().getCanCancel()).isFalse();
+    }
+
+    @Test
+    void getGroupOrderDetailRejectsUnrelatedUserAfterLocked() {
+        User outsider = user(THIRD_USER_ID, "20260003", "小周");
+        GroupOrder order = baseOrder();
+        order.setStatus(GroupOrderStatus.LOCKED.getValue());
+        OrderParticipant memberParticipant = participant(3002L, MEMBER_ID, "20.00");
+
+        when(userMapper.selectById(THIRD_USER_ID)).thenReturn(outsider);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+        when(orderParticipantMapper.selectList(any())).thenReturn(List.of(memberParticipant));
+
+        assertThatThrownBy(() -> groupOrderService.getGroupOrderDetail(authorization(THIRD_USER_ID), ORDER_ID))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> {
+                    assertThat(exception.getCode()).isEqualTo(403);
+                    assertThat(exception.getMessage()).isEqualTo("No permission to view group order detail");
+                });
+
+        verify(mealItemMapper, never()).selectList(any());
+        verify(pickupRecordMapper, never()).selectOne(any());
     }
 
     @Test
@@ -318,6 +475,29 @@ class GroupOrderServiceImplTest {
         });
 
         verify(orderParticipantMapper, never()).insert(any(OrderParticipant.class));
+    }
+
+    @Test
+    void creatorAutoJoinedThenJoinAgainReturnsConflict() {
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        GroupOrder order = baseOrder();
+        order.setParticipantCount(1);
+
+        when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+        when(orderParticipantMapper.selectCount(any())).thenReturn(1L);
+
+        assertThatThrownBy(() -> groupOrderService.joinGroupOrder(
+                authorization(CREATOR_ID),
+                ORDER_ID,
+                joinRequest("珍珠奶茶", 1, "22.00")
+        )).isInstanceOfSatisfying(BusinessException.class, exception -> {
+            assertThat(exception.getCode()).isEqualTo(409);
+            assertThat(exception.getMessage()).isEqualTo("不能重复加入同一拼单");
+        });
+
+        verify(orderParticipantMapper, never()).insert(any(OrderParticipant.class));
+        verify(mealItemMapper, never()).insert(any(MealItem.class));
     }
 
     @Test
@@ -481,6 +661,437 @@ class GroupOrderServiceImplTest {
             assertThat(exception.getCode()).isEqualTo(400);
             assertThat(exception.getMessage()).isEqualTo("发起人需先加入拼单以承接尾差");
         });
+    }
+
+    @Test
+    void cancelCreatedOrderUpdatesStatusAndWritesLogAndEvent() {
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        GroupOrder order = baseOrder();
+
+        when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+
+        CancelGroupOrderVO result = groupOrderService.cancelGroupOrder(
+                authorization(CREATOR_ID),
+                ORDER_ID,
+                cancelRequest("人数不够，先取消")
+        );
+
+        assertThat(result.getId()).isEqualTo(ORDER_ID);
+        assertThat(result.getStatus()).isEqualTo("CANCELLED");
+        assertThat(result.getCancelReason()).isEqualTo("人数不够，先取消");
+        assertThat(result.getCancelTime()).isNotBlank();
+
+        ArgumentCaptor<GroupOrder> orderCaptor = ArgumentCaptor.forClass(GroupOrder.class);
+        verify(groupOrderMapper).updateById(orderCaptor.capture());
+        GroupOrder updatedOrder = orderCaptor.getValue();
+        assertThat(updatedOrder.getStatus()).isEqualTo("CANCELLED");
+        assertThat(updatedOrder.getCancelUserId()).isEqualTo(CREATOR_ID);
+        assertThat(updatedOrder.getCancelReason()).isEqualTo("人数不够，先取消");
+        assertThat(updatedOrder.getCancelTime()).isNotNull();
+        assertThat(updatedOrder.getLastEventTime()).isEqualTo(updatedOrder.getCancelTime());
+
+        ArgumentCaptor<OrderStatusLog> logCaptor = ArgumentCaptor.forClass(OrderStatusLog.class);
+        verify(orderStatusLogMapper).insert(logCaptor.capture());
+        assertThat(logCaptor.getValue().getActionType()).isEqualTo("CANCEL_ORDER");
+        assertThat(logCaptor.getValue().getBeforeStatus()).isEqualTo("CREATED");
+        assertThat(logCaptor.getValue().getAfterStatus()).isEqualTo("CANCELLED");
+        assertThat(logCaptor.getValue().getRemark()).isEqualTo("人数不够，先取消");
+
+        ArgumentCaptor<GroupOrderEvent> eventCaptor = ArgumentCaptor.forClass(GroupOrderEvent.class);
+        verify(groupOrderEventMapper).insert(eventCaptor.capture());
+        assertThat(eventCaptor.getValue().getEventType()).isEqualTo("CANCELLED");
+        assertThat(eventCaptor.getValue().getOperatorId()).isEqualTo(CREATOR_ID);
+        assertThat(eventCaptor.getValue().getOperatorRole()).isEqualTo("CREATOR");
+        assertThat(eventCaptor.getValue().getBeforeStatus()).isEqualTo("CREATED");
+        assertThat(eventCaptor.getValue().getAfterStatus()).isEqualTo("CANCELLED");
+        assertThat(eventCaptor.getValue().getContent()).isEqualTo("人数不够，先取消");
+    }
+
+    @Test
+    void cancelLockedOrderRejectsWhenParticipantAlreadyPaid() {
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        GroupOrder order = baseOrder();
+        order.setStatus(GroupOrderStatus.LOCKED.getValue());
+
+        when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+        when(orderParticipantMapper.selectCount(any())).thenReturn(1L);
+
+        assertThatThrownBy(() -> groupOrderService.cancelGroupOrder(
+                authorization(CREATOR_ID),
+                ORDER_ID,
+                cancelRequest("有人已付款")
+        )).isInstanceOfSatisfying(BusinessException.class, exception -> {
+            assertThat(exception.getCode()).isEqualTo(409);
+            assertThat(exception.getMessage()).isEqualTo("已有成员付款，不能取消拼单");
+        });
+
+        verify(groupOrderMapper, never()).updateById(any(GroupOrder.class));
+        verify(orderStatusLogMapper, never()).insert(any(OrderStatusLog.class));
+        verify(groupOrderEventMapper, never()).insert(any(GroupOrderEvent.class));
+    }
+
+    @Test
+    void cancelLockedOrderAllowsWhenAllParticipantsUnpaid() {
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        GroupOrder order = baseOrder();
+        order.setStatus(GroupOrderStatus.LOCKED.getValue());
+
+        when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+        when(orderParticipantMapper.selectCount(any())).thenReturn(0L);
+
+        CancelGroupOrderVO result = groupOrderService.cancelGroupOrder(
+                authorization(CREATOR_ID),
+                ORDER_ID,
+                cancelRequest("锁单后无人付款，取消")
+        );
+
+        assertThat(result.getStatus()).isEqualTo("CANCELLED");
+        verify(groupOrderMapper).updateById(any(GroupOrder.class));
+
+        ArgumentCaptor<OrderStatusLog> logCaptor = ArgumentCaptor.forClass(OrderStatusLog.class);
+        verify(orderStatusLogMapper).insert(logCaptor.capture());
+        assertThat(logCaptor.getValue().getActionType()).isEqualTo("CANCEL_ORDER");
+        assertThat(logCaptor.getValue().getBeforeStatus()).isEqualTo("LOCKED");
+        assertThat(logCaptor.getValue().getAfterStatus()).isEqualTo("CANCELLED");
+        assertThat(logCaptor.getValue().getRemark()).isEqualTo("锁单后无人付款，取消");
+
+        ArgumentCaptor<GroupOrderEvent> eventCaptor = ArgumentCaptor.forClass(GroupOrderEvent.class);
+        verify(groupOrderEventMapper).insert(eventCaptor.capture());
+        assertThat(eventCaptor.getValue().getEventType()).isEqualTo("CANCELLED");
+        assertThat(eventCaptor.getValue().getOperatorId()).isEqualTo(CREATOR_ID);
+        assertThat(eventCaptor.getValue().getOperatorRole()).isEqualTo("CREATOR");
+        assertThat(eventCaptor.getValue().getBeforeStatus()).isEqualTo("LOCKED");
+        assertThat(eventCaptor.getValue().getAfterStatus()).isEqualTo("CANCELLED");
+        assertThat(eventCaptor.getValue().getContent()).isEqualTo("锁单后无人付款，取消");
+    }
+
+    @Test
+    void cancelOrderRejectsNonCreator() {
+        User member = user(MEMBER_ID, "20260002", "小林");
+        GroupOrder order = baseOrder();
+
+        when(userMapper.selectById(MEMBER_ID)).thenReturn(member);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+
+        assertThatThrownBy(() -> groupOrderService.cancelGroupOrder(
+                authorization(MEMBER_ID),
+                ORDER_ID,
+                cancelRequest("非发起人取消")
+        )).isInstanceOfSatisfying(BusinessException.class, exception -> {
+            assertThat(exception.getCode()).isEqualTo(403);
+            assertThat(exception.getMessage()).isEqualTo("只有发起人可以取消拼单");
+        });
+
+        verify(groupOrderMapper, never()).updateById(any(GroupOrder.class));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"ORDERED", "DELIVERING", "ARRIVED", "PICKED_UP"})
+    void cancelOrderRejectsFulfillmentStatuses(String status) {
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        GroupOrder order = baseOrder();
+        order.setStatus(status);
+
+        when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+
+        assertThatThrownBy(() -> groupOrderService.cancelGroupOrder(
+                authorization(CREATOR_ID),
+                ORDER_ID,
+                cancelRequest("履约中取消")
+        )).isInstanceOfSatisfying(BusinessException.class, exception -> {
+            assertThat(exception.getCode()).isEqualTo(409);
+            assertThat(exception.getMessage()).isEqualTo("当前状态不支持普通取消，请记录异常事件");
+        });
+
+        verify(groupOrderMapper, never()).updateById(any(GroupOrder.class));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"FINISHED", "CANCELLED", "EXPIRED"})
+    void cancelOrderRejectsTerminalStatuses(String status) {
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        GroupOrder order = baseOrder();
+        order.setStatus(status);
+
+        when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+
+        assertThatThrownBy(() -> groupOrderService.cancelGroupOrder(
+                authorization(CREATOR_ID),
+                ORDER_ID,
+                cancelRequest("终态取消")
+        )).isInstanceOfSatisfying(BusinessException.class, exception -> {
+            assertThat(exception.getCode()).isEqualTo(409);
+            assertThat(exception.getMessage()).isEqualTo("拼单已取消、已完成或已过期，不能取消");
+        });
+
+        verify(groupOrderMapper, never()).updateById(any(GroupOrder.class));
+    }
+
+    @Test
+    void expireGroupOrderIfTimeoutUpdatesCreatedExpiredOrderAndWritesLogAndEvent() {
+        GroupOrder order = baseOrder();
+        order.setDeadlineTime(LocalDateTime.now().minusMinutes(1));
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+        when(groupOrderMapper.update(any(GroupOrder.class), any())).thenReturn(1);
+
+        GroupOrderTimeoutCheckVO result = groupOrderService.expireGroupOrderIfTimeout(ORDER_ID);
+
+        assertThat(result.getOrderId()).isEqualTo(ORDER_ID);
+        assertThat(result.getExpired()).isTrue();
+        assertThat(result.getStatus()).isEqualTo("EXPIRED");
+        assertThat(result.getExpireTime()).isNotBlank();
+
+        ArgumentCaptor<GroupOrder> orderCaptor = ArgumentCaptor.forClass(GroupOrder.class);
+        verify(groupOrderMapper).update(orderCaptor.capture(), any());
+        assertThat(orderCaptor.getValue().getStatus()).isEqualTo("EXPIRED");
+        assertThat(orderCaptor.getValue().getExpiredTime()).isNotNull();
+        assertThat(orderCaptor.getValue().getExpireReason()).isEqualTo("超过加入截止时间，系统自动关闭");
+        assertThat(orderCaptor.getValue().getLastEventTime()).isEqualTo(orderCaptor.getValue().getExpiredTime());
+
+        ArgumentCaptor<OrderStatusLog> logCaptor = ArgumentCaptor.forClass(OrderStatusLog.class);
+        verify(orderStatusLogMapper).insert(logCaptor.capture());
+        assertThat(logCaptor.getValue().getOperatorId()).isEqualTo(0L);
+        assertThat(logCaptor.getValue().getActionType()).isEqualTo("EXPIRE_ORDER");
+        assertThat(logCaptor.getValue().getBeforeStatus()).isEqualTo("CREATED");
+        assertThat(logCaptor.getValue().getAfterStatus()).isEqualTo("EXPIRED");
+
+        ArgumentCaptor<GroupOrderEvent> eventCaptor = ArgumentCaptor.forClass(GroupOrderEvent.class);
+        verify(groupOrderEventMapper).insert(eventCaptor.capture());
+        assertThat(eventCaptor.getValue().getEventType()).isEqualTo("EXPIRED");
+        assertThat(eventCaptor.getValue().getOperatorId()).isNull();
+        assertThat(eventCaptor.getValue().getOperatorRole()).isEqualTo("SYSTEM");
+        assertThat(eventCaptor.getValue().getTitle()).isEqualTo("拼单超时关闭");
+    }
+
+    @Test
+    void expireGroupOrderIfTimeoutSkipsWhenDeadlineNotReached() {
+        GroupOrder order = baseOrder();
+        order.setDeadlineTime(LocalDateTime.now().plusMinutes(5));
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+
+        GroupOrderTimeoutCheckVO result = groupOrderService.expireGroupOrderIfTimeout(ORDER_ID);
+
+        assertThat(result.getExpired()).isFalse();
+        assertThat(result.getStatus()).isEqualTo("CREATED");
+        assertThat(result.getMessage()).isEqualTo("未到截止时间");
+        verify(groupOrderMapper, never()).update(any(GroupOrder.class), any());
+        verify(orderStatusLogMapper, never()).insert(any(OrderStatusLog.class));
+        verify(groupOrderEventMapper, never()).insert(any(GroupOrderEvent.class));
+    }
+
+    @Test
+    void expireGroupOrderIfTimeoutIsIdempotentForNonCreatedStatus() {
+        GroupOrder order = baseOrder();
+        order.setStatus(GroupOrderStatus.EXPIRED.getValue());
+        order.setExpiredTime(LocalDateTime.now().minusMinutes(1));
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+
+        GroupOrderTimeoutCheckVO result = groupOrderService.expireGroupOrderIfTimeout(ORDER_ID);
+
+        assertThat(result.getExpired()).isFalse();
+        assertThat(result.getStatus()).isEqualTo("EXPIRED");
+        assertThat(result.getMessage()).isEqualTo("当前状态无需超时关闭");
+        verify(groupOrderMapper, never()).update(any(GroupOrder.class), any());
+        verify(orderStatusLogMapper, never()).insert(any(OrderStatusLog.class));
+        verify(groupOrderEventMapper, never()).insert(any(GroupOrderEvent.class));
+    }
+
+    @Test
+    void expireGroupOrderIfTimeoutReturnsFalseWhenConcurrentUpdateWins() {
+        GroupOrder order = baseOrder();
+        order.setDeadlineTime(LocalDateTime.now().minusMinutes(1));
+        GroupOrder latest = baseOrder();
+        latest.setStatus(GroupOrderStatus.LOCKED.getValue());
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order, latest);
+        when(groupOrderMapper.update(any(GroupOrder.class), any())).thenReturn(0);
+
+        GroupOrderTimeoutCheckVO result = groupOrderService.expireGroupOrderIfTimeout(ORDER_ID);
+
+        assertThat(result.getExpired()).isFalse();
+        assertThat(result.getStatus()).isEqualTo("LOCKED");
+        assertThat(result.getMessage()).isEqualTo("超时关闭已被其他操作处理");
+        verify(orderStatusLogMapper, never()).insert(any(OrderStatusLog.class));
+        verify(groupOrderEventMapper, never()).insert(any(GroupOrderEvent.class));
+    }
+
+    @Test
+    void createGroupOrderEventAllowsCreatorAndUpdatesLastEventTime() {
+        User creator = user(CREATOR_ID, "20260001", "灏忎綍");
+        GroupOrder order = baseOrder();
+        when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+        doAnswer(invocation -> {
+            GroupOrderEvent event = invocation.getArgument(0);
+            event.setId(9001L);
+            return 1;
+        }).when(groupOrderEventMapper).insert(any(GroupOrderEvent.class));
+
+        GroupOrderEventVO result = groupOrderService.createGroupOrderEvent(
+                authorization(CREATOR_ID),
+                ORDER_ID,
+                eventRequest("MERCHANT_DELAY", "WARN", "商家出餐延迟", "预计晚到 10 分钟")
+        );
+
+        assertThat(result.getId()).isEqualTo(9001L);
+        assertThat(result.getGroupOrderId()).isEqualTo(ORDER_ID);
+        assertThat(result.getEventType()).isEqualTo("MERCHANT_DELAY");
+        assertThat(result.getEventLevel()).isEqualTo("WARN");
+        assertThat(result.getOperatorId()).isEqualTo(CREATOR_ID);
+        assertThat(result.getOperatorRole()).isEqualTo("CREATOR");
+        assertThat(result.getEventTitle()).isEqualTo("商家出餐延迟");
+        assertThat(result.getEventContent()).isEqualTo("预计晚到 10 分钟");
+        assertThat(result.getBeforeStatus()).isEqualTo(order.getStatus());
+        assertThat(result.getAfterStatus()).isEqualTo(order.getStatus());
+
+        ArgumentCaptor<GroupOrderEvent> eventCaptor = ArgumentCaptor.forClass(GroupOrderEvent.class);
+        verify(groupOrderEventMapper).insert(eventCaptor.capture());
+        GroupOrderEvent event = eventCaptor.getValue();
+        assertThat(event.getEventType()).isEqualTo("MERCHANT_DELAY");
+        assertThat(event.getEventLevel()).isEqualTo("WARN");
+        assertThat(event.getBeforeStatus()).isEqualTo(order.getStatus());
+        assertThat(event.getAfterStatus()).isEqualTo(order.getStatus());
+        assertThat(event.getEventTime()).isNotNull();
+        assertThat(event.getCreateTime()).isNotNull();
+
+        ArgumentCaptor<GroupOrder> orderCaptor = ArgumentCaptor.forClass(GroupOrder.class);
+        verify(groupOrderMapper).updateById(orderCaptor.capture());
+        assertThat(orderCaptor.getValue().getId()).isEqualTo(ORDER_ID);
+        assertThat(orderCaptor.getValue().getLastEventTime()).isNotNull();
+        assertThat(orderCaptor.getValue().getStatus()).isNull();
+    }
+
+    @Test
+    void createGroupOrderEventRejectsNonCreator() {
+        User member = user(MEMBER_ID, "20260002", "灏忔灄");
+        GroupOrder order = baseOrder();
+        when(userMapper.selectById(MEMBER_ID)).thenReturn(member);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+
+        assertThatThrownBy(() -> groupOrderService.createGroupOrderEvent(
+                authorization(MEMBER_ID),
+                ORDER_ID,
+                eventRequest("ITEM_MISSING", "ERROR", "缺餐", "少了一份鸡腿饭")
+        )).isInstanceOfSatisfying(BusinessException.class, exception -> assertThat(exception.getCode()).isEqualTo(403));
+
+        verify(groupOrderEventMapper, never()).insert(any(GroupOrderEvent.class));
+        verify(groupOrderMapper, never()).updateById(any(GroupOrder.class));
+    }
+
+    @Test
+    void createGroupOrderEventRejectsLifecycleEventType() {
+        User creator = user(CREATOR_ID, "20260001", "灏忎綍");
+        GroupOrder order = baseOrder();
+        when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+
+        assertThatThrownBy(() -> groupOrderService.createGroupOrderEvent(
+                authorization(CREATOR_ID),
+                ORDER_ID,
+                eventRequest("EXPIRED", "INFO", "超时关闭", "不允许手动创建")
+        )).isInstanceOfSatisfying(BusinessException.class, exception -> assertThat(exception.getCode()).isEqualTo(400));
+
+        verify(groupOrderEventMapper, never()).insert(any(GroupOrderEvent.class));
+        verify(groupOrderMapper, never()).updateById(any(GroupOrder.class));
+    }
+
+    @Test
+    void listGroupOrderEventsAllowsParticipant() {
+        User member = user(MEMBER_ID, "20260002", "灏忔灄");
+        GroupOrder order = baseOrder();
+        GroupOrderEvent event = groupOrderEvent("PAYMENT_DISPUTE", "WARN", "付款争议", "成员反馈金额有误");
+        when(userMapper.selectById(MEMBER_ID)).thenReturn(member);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+        when(orderParticipantMapper.selectCount(any())).thenReturn(1L);
+        when(groupOrderEventMapper.selectList(any())).thenReturn(List.of(event));
+
+        List<GroupOrderEventVO> result = groupOrderService.listGroupOrderEvents(authorization(MEMBER_ID), ORDER_ID);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.getFirst().getEventType()).isEqualTo("PAYMENT_DISPUTE");
+        assertThat(result.getFirst().getEventTitle()).isEqualTo("付款争议");
+        assertThat(result.getFirst().getOperatorId()).isEqualTo(CREATOR_ID);
+        verify(groupOrderEventMapper).selectList(any());
+    }
+
+    @Test
+    void listGroupOrderEventsRejectsUnrelatedUser() {
+        User outsider = user(THIRD_USER_ID, "20260003", "小周");
+        GroupOrder order = baseOrder();
+        when(userMapper.selectById(THIRD_USER_ID)).thenReturn(outsider);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+        when(orderParticipantMapper.selectCount(any())).thenReturn(0L);
+
+        assertThatThrownBy(() -> groupOrderService.listGroupOrderEvents(authorization(THIRD_USER_ID), ORDER_ID))
+                .isInstanceOfSatisfying(BusinessException.class, exception -> assertThat(exception.getCode()).isEqualTo(403));
+
+        verify(groupOrderEventMapper, never()).selectList(any());
+    }
+
+    @Test
+    void cancelledOrderRejectsJoinLockPaymentAndPickupProgress() {
+        User creator = user(CREATOR_ID, "20260001", "小何");
+        User member = user(MEMBER_ID, "20260002", "小林");
+        GroupOrder order = baseOrder();
+        order.setStatus(GroupOrderStatus.CANCELLED.getValue());
+        order.setPickupUserId(MEMBER_ID);
+
+        when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
+        when(userMapper.selectById(MEMBER_ID)).thenReturn(member);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+
+        assertThatThrownBy(() -> groupOrderService.joinGroupOrder(
+                authorization(MEMBER_ID),
+                ORDER_ID,
+                joinRequest("珍珠奶茶", 1, "22.00")
+        )).isInstanceOfSatisfying(BusinessException.class, exception -> {
+            assertThat(exception.getCode()).isEqualTo(400);
+            assertThat(exception.getMessage()).isEqualTo("拼单已锁定，不能继续加入");
+        });
+
+        assertThatThrownBy(() -> groupOrderService.lockGroupOrder(
+                authorization(CREATOR_ID),
+                ORDER_ID,
+                null
+        )).isInstanceOfSatisfying(BusinessException.class, exception -> {
+            assertThat(exception.getCode()).isEqualTo(409);
+            assertThat(exception.getMessage()).isEqualTo("当前状态不能锁单");
+        });
+
+        PaymentRequest paymentRequest = new PaymentRequest();
+        paymentRequest.setRemark("取消后尝试付款");
+        assertThatThrownBy(() -> groupOrderService.markParticipantPaid(
+                authorization(MEMBER_ID),
+                ORDER_ID,
+                3002L,
+                paymentRequest
+        )).isInstanceOfSatisfying(BusinessException.class, exception -> {
+            assertThat(exception.getCode()).isEqualTo(400);
+            assertThat(exception.getMessage()).isEqualTo("拼单未锁定，暂不能标记付款");
+        });
+
+        PickupStatusUpdateRequest pickupRequest = new PickupStatusUpdateRequest();
+        pickupRequest.setPickupStatus(PickupStatus.WAITING_DELIVERY.getValue());
+        assertThatThrownBy(() -> groupOrderService.updatePickupStatus(
+                authorization(CREATOR_ID),
+                ORDER_ID,
+                pickupRequest
+        )).isInstanceOfSatisfying(BusinessException.class, exception -> {
+            assertThat(exception.getCode()).isEqualTo(409);
+            assertThat(exception.getMessage()).isEqualTo("拼单已取消或已完成");
+        });
+
+        verify(orderParticipantMapper, never()).insert(any(OrderParticipant.class));
+        verify(mealItemMapper, never()).insert(any(MealItem.class));
+        verify(groupOrderMapper, never()).updateById(any(GroupOrder.class));
+        verify(paymentRecordMapper, never()).insert(any(PaymentRecord.class));
+        verify(pickupRecordMapper, never()).updateById(any(PickupRecord.class));
+        verify(orderStatusLogMapper, never()).insert(any(OrderStatusLog.class));
+        verify(groupOrderEventMapper, never()).insert(any(GroupOrderEvent.class));
     }
 
     @Test
@@ -1391,16 +2002,57 @@ class GroupOrderServiceImplTest {
     }
 
     private JoinGroupOrderRequest joinRequest(String itemName, int quantity, String unitPrice) {
-        JoinGroupOrderRequest.MealItemRequest item = new JoinGroupOrderRequest.MealItemRequest();
-        item.setItemName(itemName);
-        item.setQuantity(quantity);
-        item.setUnitPrice(new BigDecimal(unitPrice));
+        JoinGroupOrderRequest.MealItemRequest item = mealItemRequest(itemName, quantity, unitPrice);
         item.setRemark("少冰");
 
         JoinGroupOrderRequest request = new JoinGroupOrderRequest();
         request.setRemark("少冰，不要吸管");
         request.setMealItems(List.of(item));
         return request;
+    }
+
+    private JoinGroupOrderRequest.MealItemRequest mealItemRequest(String itemName, int quantity, String unitPrice) {
+        JoinGroupOrderRequest.MealItemRequest item = new JoinGroupOrderRequest.MealItemRequest();
+        item.setItemName(itemName);
+        item.setQuantity(quantity);
+        item.setUnitPrice(new BigDecimal(unitPrice));
+        return item;
+    }
+
+    private CancelGroupOrderRequest cancelRequest(String cancelReason) {
+        CancelGroupOrderRequest request = new CancelGroupOrderRequest();
+        request.setCancelReason(cancelReason);
+        return request;
+    }
+
+    private CreateGroupOrderEventRequest eventRequest(
+            String eventType,
+            String eventLevel,
+            String eventTitle,
+            String eventContent) {
+        CreateGroupOrderEventRequest request = new CreateGroupOrderEventRequest();
+        request.setEventType(eventType);
+        request.setEventLevel(eventLevel);
+        request.setEventTitle(eventTitle);
+        request.setEventContent(eventContent);
+        return request;
+    }
+
+    private GroupOrderEvent groupOrderEvent(String eventType, String eventLevel, String title, String content) {
+        GroupOrderEvent event = new GroupOrderEvent();
+        event.setId(9001L);
+        event.setGroupOrderId(ORDER_ID);
+        event.setEventType(eventType);
+        event.setEventLevel(eventLevel);
+        event.setOperatorId(CREATOR_ID);
+        event.setOperatorRole("CREATOR");
+        event.setTitle(title);
+        event.setContent(content);
+        event.setBeforeStatus(GroupOrderStatus.LOCKED.getValue());
+        event.setAfterStatus(GroupOrderStatus.LOCKED.getValue());
+        event.setEventTime(LocalDateTime.of(2026, 5, 29, 18, 45));
+        event.setCreateTime(LocalDateTime.of(2026, 5, 29, 18, 45));
+        return event;
     }
 
     private OrderParticipant participant(Long id, Long userId, String originalAmount) {

@@ -4,10 +4,12 @@ import { computed, ref } from 'vue'
 import { orderApi } from '@/api'
 import type {
   AssignPickupRequest,
+  CancelGroupOrderRequest,
   CreateGroupOrderRequest,
   DashboardSummary,
   DashboardSummaryQuery,
   GroupOrderDetail,
+  GroupOrderEvent,
   GroupOrderStatus,
   GroupOrderSummary,
   JoinGroupOrderRequest,
@@ -22,12 +24,14 @@ import type {
 export const useOrderStore = defineStore('orders', () => {
   const orders = ref<GroupOrderSummary[]>([])
   const currentDetail = ref<GroupOrderDetail | null>(null)
+  const currentEvents = ref<GroupOrderEvent[]>([])
   const myOrders = ref<MyGroupOrderRecord[]>([])
   const dashboard = ref<DashboardSummary | null>(null)
   const keyword = ref('')
   const status = ref<GroupOrderStatus | ''>('')
   const orderType = ref<OrderType | ''>('')
   const loading = ref(false)
+  const eventsLoading = ref(false)
   const myOrdersLoading = ref(false)
   const dashboardLoading = ref(false)
   const total = ref(0)
@@ -72,6 +76,8 @@ export const useOrderStore = defineStore('orders', () => {
 
   const lockOrder = (id: number, payload: LockGroupOrderRequest) => orderApi.lockGroupOrder(id, payload)
 
+  const cancelOrder = (id: number, payload: CancelGroupOrderRequest) => orderApi.cancelGroupOrder(id, payload)
+
   const markPayment = (orderId: number, participantId: number, payload: PaymentActionRequest) =>
     orderApi.markPayment(orderId, participantId, payload)
 
@@ -86,10 +92,26 @@ export const useOrderStore = defineStore('orders', () => {
   const loadDetail = async (id: number) => {
     loading.value = true
     try {
-      currentDetail.value = await orderApi.getGroupOrderDetail(id)
+      const detail = await orderApi.getGroupOrderDetail(id)
+      currentDetail.value = detail
+      currentEvents.value = detail.recentEvents ?? []
     } finally {
       loading.value = false
     }
+  }
+
+  const loadEvents = async (id: number) => {
+    eventsLoading.value = true
+    try {
+      currentEvents.value = await orderApi.listGroupOrderEvents(id)
+    } finally {
+      eventsLoading.value = false
+    }
+  }
+
+  const clearEvents = () => {
+    currentEvents.value = []
+    eventsLoading.value = false
   }
 
   const loadMyOrders = async (params: MyGroupOrderQuery = {}) => {
@@ -121,12 +143,14 @@ export const useOrderStore = defineStore('orders', () => {
   return {
     orders,
     currentDetail,
+    currentEvents,
     myOrders,
     dashboard,
     keyword,
     status,
     orderType,
     loading,
+    eventsLoading,
     myOrdersLoading,
     dashboardLoading,
     total,
@@ -142,11 +166,14 @@ export const useOrderStore = defineStore('orders', () => {
     createOrder,
     joinOrder,
     lockOrder,
+    cancelOrder,
     markPayment,
     confirmPayment,
     assignPickupUser,
     updatePickupStatus,
     loadDetail,
+    loadEvents,
+    clearEvents,
     loadMyOrders,
     loadDashboard
   }

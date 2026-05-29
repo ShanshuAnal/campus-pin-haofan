@@ -43,11 +43,11 @@ const logout = async () => {
         <span class="brand__mark">拼</span>
         <div>
           <strong>校园拼好饭</strong>
-          <small>校园拼单协同演示</small>
+          <small>校园拼单协同</small>
         </div>
       </div>
       <div class="topbar__actions">
-        <ElButton text :icon="User">{{ userStore.user?.nickname ?? '演示用户' }}</ElButton>
+        <ElButton text :icon="User">{{ userStore.user?.nickname ?? userStore.user?.username ?? '同学' }}</ElButton>
         <ElButton :icon="SwitchButton" @click="logout">退出</ElButton>
       </div>
     </ElHeader>

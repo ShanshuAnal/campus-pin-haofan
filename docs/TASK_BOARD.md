@@ -11,8 +11,8 @@
 
 ## 看板模板
 
-| 任务 ID | 任务名称 | 负责会话 | 状态 | 涉及目录 | 依赖任务 | 备注 |
-| --- | --- | --- | --- | --- | --- | --- |
+| 任务 ID | 任务名称 | 负责会话 | 状态   | 涉及目录 | 依赖任务 | 备注 |
+| --- | --- | --- |------| --- | --- | --- |
 | T001 | 编写需求说明文档 | 主控会话 | DONE | docs/01-需求说明.md | 无 | 已创建需求说明文档并完成内容检查 |
 | T002 | 编写领域模型与业务规则文档 | 主控会话 | DONE | docs/02-领域模型与业务规则.md | T001 | 已创建领域模型、状态流转、金额规则和异常场景说明 |
 | T003 | 编写数据库设计文档 | SQL 设计会话 | DONE | docs/03-数据库设计.md | T002 | 已完成 MySQL 8 表结构设计说明，暂不生成 schema.sql |
@@ -50,16 +50,28 @@
 | T019 | 拼单详情与加入拼单联调 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | T018, T010-BE | 已接入 GET /api/group-orders/{orderId} 与 POST /api/group-orders/{orderId}/participants；详情页展示基础信息、发起人、参与者、餐品、金额进度、满减差额、付款和取餐状态；加入成功后刷新详情；已删除详情和加入拼单 mock，保留锁单、付款、取餐、我的拼单和数据看板 mock；已通过 npm run build，并联调详情、加入、重复加入、金额非法、人数已满和已锁定错误提示 |
 | T020 | 锁单、付款、取餐主流程联调 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | T019, T011, T012-BE, T013 | 已在拼单详情页接入锁单、标记付款、确认付款、指定取餐人和更新取餐状态真实接口，并按发起人、参与者、取餐人身份控制按钮显示；已删除详情页锁单、付款、取餐模拟操作，保留我的拼单和数据看板 mock；已通过 npm run build，并联调创建/加入/非发起人锁单失败/锁单/标记付款/确认付款/重复付款失败/指定取餐人/非法取餐跳转/越权取餐更新/合法取餐推进到 FINISHED；注意当前后端取餐状态接口实际为 PATCH /api/group-orders/{id}/pickup-status，与 API 文档 POST 口径存在差异 |
 | T021 | 我的拼单与数据看板联调 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | T020, T014 | 已接入 GET /api/my/group-orders 与 GET /api/dashboard/summary；我的拼单支持我发起、我参与、待付款、历史拼单分页查询，数据看板展示今日拼单数、成功拼单数、累计节省金额、热门类型和热门店铺；已删除剩余我的拼单和数据看板 mock，frontend/src 下无 mock 残留；已通过 npm run build，并回归联调登录注册、拼单大厅、发起拼单、详情、加入、锁单、付款、取餐、我的拼单和数据看板均走真实接口 |
+| T022 | 总结后端会话 LLM 辅助开发记录 | 后端会话 | DONE | docs/LLM辅助开发记录.md, docs/TASK_BOARD.md | T015-IT, T021 | 已汇总后端会话在工程骨架、实体 Mapper、认证、拼单主流程、金额分摊、状态流转、测试反馈修复中的 LLM 辅助作用，并记录阻塞点、人工收口点、效率和质量影响 |
 | V2-T001 | 全局 V2 设计重构 | 主控会话 | DONE | docs/01-需求说明.md, docs/02-领域模型与业务规则.md, docs/03-数据库设计.md, docs/04-API接口文档.md, docs/05-测试用例.md, docs/V2-升级设计说明.md, docs/TASK_BOARD.md | T021 | 已按 V2 重新梳理需求、领域、数据库建议、API 契约和测试矩阵；保留 MVP 能力，新增取消、超时、事件、并发、Redis/RocketMQ 边界和前端产品化方向；本任务未修改 backend/、frontend/、sql/schema.sql、sql/data.sql |
-| V2-T002 | 根据 V2 设计修改数据库文档和 schema | SQL 会话 | TODO | docs/03-数据库设计.md, sql/schema.sql, sql/data.sql, docs/TASK_BOARD.md | V2-T001 | 根据 V2 设计落地 group_order 取消/过期/版本字段、group_order_event 表、必要索引和演示数据；同步数据库文档 |
-| V2-T003 | 取消拼单接口 | 后端会话 | TODO | backend/, docs/TASK_BOARD.md | V2-T002 | 实现 POST /api/group-orders/{id}/cancel，补充权限校验、状态校验、取消原因、状态日志和事件记录 |
-| V2-T004 | 超时关闭 + RocketMQ 延迟消息 | 后端会话 | TODO | backend/, docs/TASK_BOARD.md | V2-T002, V2-T003 | 实现 CREATED 超时进入 EXPIRED；RocketMQ 只触发超时检查，最终状态以 MySQL 事务和状态校验为准 |
-| V2-T005 | 延迟/异常事件记录 | 后端会话 | TODO | backend/, docs/TASK_BOARD.md | V2-T002 | 实现 group_order_event 新增与查询接口；延迟、缺餐、联系失败、付款争议等记录为事件，不扩散主状态 |
-| V2-T006 | Redis 防重复提交和锁单短时锁 | 后端会话 | TODO | backend/, docs/TASK_BOARD.md | V2-T003, V2-T004, V2-T005 | 为关键写接口补充防重复提交；锁单等高冲突操作可使用 Redis 短时锁辅助，但正确性仍以 MySQL 为准 |
-| V2-T007 | 取消/超时/延迟/并发测试 | 测试会话 | TODO | backend/src/test/, docs/05-测试用例.md, docs/TASK_BOARD.md | V2-T003, V2-T004, V2-T005, V2-T006 | 覆盖取消权限、EXPIRED 超时关闭、延迟/异常事件、重复提交、锁单并发和 MQ 重复消费等场景 |
-| V2-T008 | 拼单大厅产品化改版 | 前端会话 | TODO | frontend/, docs/TASK_BOARD.md | V2-T001 | 将大厅从后台表格改为校园拼单产品首页，突出拼单卡片、取餐点、倒计时、凑单进度和可加入状态 |
-| V2-T009 | 详情页流程式改版 | 前端会话 | TODO | frontend/, docs/TASK_BOARD.md | V2-T003, V2-T005, V2-T008 | 按拼单协同流程重构详情页，突出主状态、成员金额、付款、取餐、事件时间线和当前用户可操作项 |
-| V2-T010 | 异常状态、取消、延迟提示联调 | 前端会话 | TODO | frontend/, docs/TASK_BOARD.md | V2-T004, V2-T005, V2-T009 | 联调取消、EXPIRED、延迟/异常事件提示和终态操作限制，确保前端口径与 V2 API 契约一致 |
+| DOC-TEST-LLM | 总结测试会话 LLM 辅助开发记录 | 测试会话 | DONE | docs/LLM辅助开发记录.md, docs/TASK_BOARD.md | T015-IT, V2-T001 | 已总结测试会话在 T008-T015 阶段补充 Service 测试、发现排序和 EXPIRED 口径问题、覆盖金额/付款/状态边界、完成后端 MVP 集成测试，以及验证 Controller、Token 校验、Service、Mapper、MySQL、Redis 完整链路中的作用；未修改业务代码 |
+| V2-T001-REVIEW | V2 开发准入审查 | 主控会话 | DONE | docs/V2-升级设计说明.md, docs/TASK_BOARD.md | V2-T001 | 已审查 V2 未明显过度设计；明确取消、超时、事件、MySQL 并发控制和前端产品化为必做，Redis/RocketMQ 为增强能力，不作为核心状态源或开发准入阻塞 |
+| V2-T002 | 根据 V2 设计修改数据库文档和 schema | SQL 会话 | DONE | docs/03-数据库设计.md, sql/schema.sql, sql/data.sql, docs/TASK_BOARD.md | V2-T001-REVIEW | 已根据 V2 设计落地 group_order 取消/过期/版本/最近事件字段、group_order_event 表、必要索引和演示数据；继续不使用物理外键，async_message_record 仅在 MQ 消费追踪确有需要时再新增 |
+| V2-T003 | 取消拼单接口 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | V2-T002 | 已实现 POST /api/group-orders/{id}/cancel；仅发起人可取消，CREATED 可直接取消，LOCKED 需无人付款，ORDERED/DELIVERING/ARRIVED/PICKED_UP 不做普通取消，终态不可取消；已记录 cancel_reason、cancel_time、cancel_user_id、order_status_log 和 group_order_event；已通过 mvn test（63 tests）和 mvn -DskipTests package |
+| V2-T003-QA | 取消拼单测试 | 测试会话 | DONE | backend/src/test/, docs/05-测试用例.md, docs/TASK_BOARD.md | V2-T003 | 已补充发起人/非发起人取消、CREATED/LOCKED/履约中/终态状态校验、取消后禁止加入/锁单/付款/取餐推进，以及 order_status_log 和 group_order_event 记录断言；已通过 mvn test（64 tests, 0 failures） |
+| V2-T004 | 超时关闭 + RocketMQ 延迟消息 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | V2-T002, V2-T003 | 已实现 CREATED 超时关闭为 EXPIRED 的核心逻辑，创建拼单后调用 GroupOrderTimeoutMessagePublisher；本地 haofan.rocketmq.enabled=false 使用 Noop/Mock 仅记录日志，并提供手动触发入口模拟超时消息；已预留 RocketMQ 适配类和配置项，ECS 部署后开启 enabled=true 并联调真实 RocketMQ；已通过 mvn test（68 tests）和 mvn -DskipTests package |
+| V2-T005 | 延迟/异常事件记录 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | V2-T002 | 已实现 POST /api/group-orders/{id}/events 与 GET /api/group-orders/{id}/events；支持延迟、缺餐、联系失败、付款争议、配送/取餐异常和备注事件，事件只追加且不改变 group_order 主状态；新增事件仅发起人可操作，发起人、取餐人和参与者可查看时间线；新增事件后更新 group_order.last_event_time；事件响应 JSON 已对齐 API 文档的 title/content 字段；已通过 mvn test（73 tests, 0 failures）和 mvn -DskipTests package |
+| V2-T006 | Redis 防重复提交和锁单短时锁 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | V2-T003, V2-T004, V2-T005 | 已基于 StringRedisTemplate 实现 Idempotency-Key 防重复提交和 Redis 短时锁；关键写接口支持幂等 key，加入拼单、锁单、取消拼单、取餐人指定和取餐状态推进使用 order 级短锁辅助并发控制；Redis 仅用于防重和短锁，业务正确性仍依赖 MySQL 事务与状态校验；已通过 mvn test（78 tests, 0 failures）和 mvn -DskipTests package |
+| V2-T007 | 取消/超时/延迟/并发测试 | 测试会话 | DONE | backend/src/test/, docs/05-测试用例.md, docs/TASK_BOARD.md | V2-T003, V2-T004, V2-T005, V2-T006 | 已补充和回归取消权限/状态限制/取消后禁止操作、CREATED 超时进入 EXPIRED、非 CREATED 不误改、重复触发幂等、延迟/异常事件新增与查询、事件不改变主状态、Redis Idempotency-Key 防重复写入和 order 短锁占用拒绝写入；已通过 mvn test（81 tests, 0 failures） |
+| V2-T008 | 拼单大厅产品化改版 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | V2-T001-REVIEW | 已保留 GET /api/group-orders 真实接口，将大厅改为校园产品首页：顶部搜索、概览卡片、快捷筛选、柔和渐变背景和拼单卡片流；卡片突出状态、人数进度、满减进度、倒计时、取餐点和加入/查看按钮；已通过 npm run build |
+| V2-T009 | 详情页流程式改版 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | V2-T003, V2-T005, V2-T008 | 已保留真实接口和现有接口路径，将详情页改为发起、加入、锁单、付款、取餐、完成的流程式页面；展示拼单信息、成员金额、餐品明细、付款状态、取餐状态和事件时间线；按钮优先以后端 permissions 控制并兼容现有身份推断；已适配 CANCELLED、EXPIRED、FINISHED 终态；已通过 npm run build |
+| V2-T010 | 异常状态、取消、延迟提示联调 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | V2-T004, V2-T005, V2-T009 | 已接入 POST /api/group-orders/{id}/cancel 和 GET /api/group-orders/{id}/events；详情页支持取消原因弹窗、事件时间线、CANCELLED 取消原因/时间、EXPIRED 系统超时关闭提示；ORDERED 之后普通取消禁用提示，CANCELLED/EXPIRED/FINISHED 终态禁止加入、锁单、付款和取餐推进；大厅卡片同步展示取消/超时/完成状态且不展示加入按钮；已通过 npm run build |
+| V2-T011-VISIBILITY-DESIGN | 收口大厅、详情和事件时间线可见性规则 | 主控会话 | DONE | docs/04-API接口文档.md, docs/V2-升级设计说明.md, docs/TASK_BOARD.md | V2-T010 | 已明确大厅只展示公开可加入拼单和当前用户相关拼单；CREATED 允许未参与用户查看公开详情并加入；LOCKED 及之后详情仅相关用户可见；事件时间线仅发起人、参与者、取餐人可见；详情 permissions 需包含 canViewEvents；前端不得直接展示 raw 后端错误 |
+| V2-T012-BE-VISIBILITY | 实现 V2 可见性规则 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | V2-T011-VISIBILITY-DESIGN | 已实现大厅只返回公开可加入拼单和当前用户相关拼单；CREATED 详情允许登录用户查看并根据 permissions.canJoin 控制加入，LOCKED 及之后详情拒绝无关用户；详情返回 permissions，canViewEvents 仅发起人、参与者、取餐人为 true；事件接口后端权限校验保持不变；已通过 mvn test（83 tests, 0 failures）和 mvn -DskipTests package |
+| V2-T013-FE-VISIBILITY | 联调 V2 可见性与友好错误提示 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | V2-T012-BE-VISIBILITY | 已按 permissions 控制详情按钮和事件时间线；canViewEvents=false 时不请求 /events 并展示友好提示；大厅显式不可查看拼单不展示入口；权限类错误映射为中文提示；已清理登录和顶部栏演示字样并通过 npm run build |
+| V2-T014-CREATOR-ITEMS-DESIGN | 收口发起拼单自动加入规则 | 主控会话 | DONE | docs/04-API接口文档.md, docs/V2-升级设计说明.md, docs/TASK_BOARD.md | V2-T013-FE-VISIBILITY | 已明确创建拼单时可通过 creatorItems 同步填写发起人点餐内容；creatorItems 非空时后端自动生成发起人的参与记录和餐品明细，并更新 participant_count、original_total_amount、payable_total_amount；creatorItems 为空仍允许创建空拼单；不修改数据库结构 |
+| V2-T015-BE-CREATOR-ITEMS | 实现发起拼单自动加入 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | V2-T014-CREATOR-ITEMS-DESIGN | 已实现 POST /api/group-orders 支持 creatorItems；非空时同事务创建 group_order、发起人 order_participant、meal_item，并更新 participant_count、original_total_amount、payable_total_amount，未锁单前 payable_total_amount=original_total_amount；creatorItems 为空仍允许创建空拼单；发起人已有参与记录后再次加入返回 409；未修改数据库结构；已通过 mvn test（86 tests, 0 failures）和 mvn -DskipTests package |
+| V2-T016-FE-CREATOR-ITEMS | 联调发起拼单我的点餐 | 前端会话 | DONE | frontend/, docs/TASK_BOARD.md | V2-T015-BE-CREATOR-ITEMS | 已在发起拼单表单增加“我的点餐”区域，提交时携带 creatorItems；允许空点餐创建并给出提示；创建成功后直接跳转拼单详情页，不再引导发起人回大厅加入自己的拼单；已通过 npm run build |
+| V2-T017-BE-ROCKETMQ-REAL | 接入真实 RocketMQ 超时消息能力 | 后端会话 | DONE | backend/, docs/TASK_BOARD.md | V2-T004 | 已使用 rocketmq-client 5.1.4 和 rocketmq-acl 5.1.4 接入 ACL Producer/Consumer；enabled=false 保持 Noop 不连接 MQ，enabled=true 通过配置/环境变量连接真实 RocketMQ；本地已验证 Noop、单测和打包，真实 RocketMQ 链路需 ECS 部署后补充验证 |
+| V2-FINAL | 全流程验收、mock 清理和演示准备 | 前端/测试会话 | DONE | frontend/, docs/05-测试用例.md, docs/TASK_BOARD.md, docs/演示脚本.md | V2-T010, V2-T007 | 已完成前端 mock 残留检查、真实接口路径核对、MVP/V2 流程回归记录、终态按钮/loading/空状态/错误提示检查，补充验收记录和演示脚本；前端 build 通过，后端 81 tests 回归通过 |
 ## 使用规则
 
 - 开始任务前将状态改为 `DOING`。

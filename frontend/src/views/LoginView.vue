@@ -38,7 +38,7 @@ const registerAndLogin = async () => {
     await userStore.register({
       username: form.username,
       password: form.password,
-      nickname: '演示用户'
+      nickname: form.username || '新同学'
     })
     await userStore.login(form)
     ElMessage.success('注册并登录成功')
@@ -55,7 +55,7 @@ const registerAndLogin = async () => {
       <div class="login-copy">
         <span class="brand__mark">拼</span>
         <h1>校园拼好饭</h1>
-        <p>围绕发起拼单、成员加入、金额分摊、付款标记和取餐协同的课堂演示前端。</p>
+        <p>围绕发起拼单、成员加入、金额分摊、付款标记和取餐协同的校园拼单工具。</p>
       </div>
       <ElForm class="login-form" :model="form" label-position="top" @submit.prevent="submit">
         <ElFormItem label="账号">
@@ -65,10 +65,10 @@ const registerAndLogin = async () => {
           <ElInput v-model="form.password" :prefix-icon="Lock" show-password type="password" />
         </ElFormItem>
         <ElButton type="primary" size="large" :loading="loading" native-type="submit">
-          登录进入演示
+          登录
         </ElButton>
         <ElButton class="register-button" text :loading="registerLoading" @click="registerAndLogin">
-          注册演示账号
+          注册账号
         </ElButton>
       </ElForm>
     </section>

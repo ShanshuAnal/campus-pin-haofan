@@ -9,6 +9,7 @@ export type GroupOrderStatus =
   | 'PICKED_UP'
   | 'FINISHED'
   | 'CANCELLED'
+  | 'EXPIRED'
 
 export type PaymentStatus = 'UNPAID' | 'PAID' | 'CONFIRMED' | 'REFUNDED'
 
@@ -20,6 +21,20 @@ export type PickupStatus =
   | 'DISTRIBUTED'
 
 export type OrderType = 'TAKEOUT' | 'CANTEEN' | 'MILK_TEA' | 'MIDNIGHT_SNACK'
+
+export type GroupOrderEventType =
+  | 'CANCELLED'
+  | 'EXPIRED'
+  | 'DELAY_REPORTED'
+  | 'MERCHANT_DELAY'
+  | 'DELIVERY_DELAY'
+  | 'PICKUP_EXCEPTION'
+  | 'ITEM_MISSING'
+  | 'CONTACT_FAILED'
+  | 'PAYMENT_DISPUTE'
+  | 'NOTE'
+
+export type GroupOrderEventLevel = 'INFO' | 'WARN' | 'ERROR'
 
 export interface GroupOrderQuery {
   status?: GroupOrderStatus
@@ -59,6 +74,7 @@ export interface CreateGroupOrderRequest {
   discountThresholdAmount?: number
   discountAmount?: number
   remark?: string
+  creatorItems?: JoinMealItemRequest[]
 }
 
 export interface JoinMealItemRequest {
@@ -75,6 +91,10 @@ export interface JoinGroupOrderRequest {
 
 export interface LockGroupOrderRequest {
   remark?: string
+}
+
+export interface CancelGroupOrderRequest {
+  cancelReason: string
 }
 
 export interface LockAllocation {
@@ -145,11 +165,13 @@ export interface GroupOrderSummary {
   title: string
   orderType: OrderType
   merchantName: string
+  shopName?: string
   pickupLocation: string
   creator: UserSummary
   deadlineTime: string
   maxParticipants: number
   participantCount: number
+  minAmount?: number | string | null
   discountThresholdAmount: number | null
   discountAmount: number
   originalTotalAmount: number
@@ -157,19 +179,68 @@ export interface GroupOrderSummary {
   payableTotalAmount: number
   roundingAdjustmentAmount: number
   status: GroupOrderStatus
+  joinable?: boolean
+  progressPercent?: number
+  remainingSeconds?: number
+  lastEventSummary?: string | null
+  canViewDetail?: boolean
+  viewable?: boolean
   pickupUser: UserSummary | null
   remark: string
   lockedTime: string | null
   finishTime: string | null
   cancelTime: string | null
+  cancelReason?: string | null
+  expiredTime?: string | null
+  expireReason?: string | null
   createTime: string
   updateTime: string
+}
+
+export interface CancelGroupOrderResponse {
+  id: number
+  status: GroupOrderStatus
+  cancelReason: string | null
+  cancelTime: string | null
+}
+
+export interface GroupOrderPermissions {
+  canJoin?: boolean
+  canLock?: boolean
+  canCancel?: boolean
+  canMarkPayment?: boolean
+  canConfirmPayment?: boolean
+  canAssignPickupUser?: boolean
+  canUpdatePickupStatus?: boolean
+  canCreateEvent?: boolean
+  canViewEvents?: boolean
+}
+
+export interface PickupSnapshot {
+  pickupStatus: PickupStatus
+  pickupLocation: string | null
+  pickupUser?: UserSummary | null
+}
+
+export interface GroupOrderEvent {
+  id: number
+  eventType: GroupOrderEventType
+  eventLevel: GroupOrderEventLevel
+  operatorId: number | null
+  operatorRole: string | null
+  title: string
+  content: string
+  eventTime: string
 }
 
 export interface GroupOrderDetail {
   order: GroupOrderSummary
   participants: Participant[]
   pickupRecord: PickupRecord | null
+  pickup?: PickupSnapshot | null
+  permissions?: GroupOrderPermissions
+  currentUserRole?: 'CREATOR' | 'PARTICIPANT' | 'PICKUP_USER' | 'RELATED' | string
+  recentEvents?: GroupOrderEvent[]
 }
 
 export interface GroupOrderAmount {

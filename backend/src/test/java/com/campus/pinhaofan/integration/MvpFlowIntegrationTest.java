@@ -13,6 +13,7 @@ import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
@@ -54,6 +55,9 @@ class MvpFlowIntegrationTest {
 
     @Autowired
     private DataSource dataSource;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @Autowired
     private RedisConnectionFactory redisConnectionFactory;
@@ -208,6 +212,111 @@ class MvpFlowIntegrationTest {
         expectCode(getApi("/api/group-orders", null), 401, "未登录");
     }
 
+    @Test
+    void v2EventTimelineAllowsCreatorCreateParticipantViewAndKeepsOrderStatus() throws Exception {
+        long suffix = System.currentTimeMillis();
+        register("event_a_" + suffix, "事件发起人");
+        Long memberId = register("event_b_" + suffix, "事件参与者");
+
+        String accessA = login("event_a_" + suffix).path("accessToken").asText();
+        String accessB = login("event_b_" + suffix).path("accessToken").asText();
+        Long orderId = createGroupOrder(accessA);
+        joinOrder(accessB, orderId, "成员套餐", "12.00");
+
+        JsonNode createdEvent = ok(postApi(
+                "/api/group-orders/" + orderId + "/events",
+                accessA,
+                """
+                        {
+                          "eventType": "DELAY_REPORTED",
+                          "eventLevel": "WARN",
+                          "title": "商家出餐延迟",
+                          "content": "预计晚到 10 分钟"
+                        }
+                        """
+        ));
+        assertThat(createdEvent.path("eventType").asText()).isEqualTo("DELAY_REPORTED");
+        assertThat(createdEvent.path("eventLevel").asText()).isEqualTo("WARN");
+        assertThat(createdEvent.path("operatorRole").asText()).isEqualTo("CREATOR");
+        assertThat(createdEvent.path("title").asText()).isEqualTo("商家出餐延迟");
+        assertThat(createdEvent.path("content").asText()).isEqualTo("预计晚到 10 分钟");
+        assertThat(createdEvent.path("beforeStatus").asText()).isEqualTo("CREATED");
+        assertThat(createdEvent.path("afterStatus").asText()).isEqualTo("CREATED");
+
+        assertThat(queryString("select status from group_order where id = ?", orderId)).isEqualTo("CREATED");
+        assertThat(queryLong("select count(*) from order_participant where group_order_id = ? and user_id = ?", orderId, memberId))
+                .isEqualTo(1L);
+        assertThat(queryLong("select count(*) from group_order_event where group_order_id = ?", orderId))
+                .isEqualTo(1L);
+        assertThat(queryLong("select count(*) from group_order where id = ? and last_event_time is not null", orderId))
+                .isEqualTo(1L);
+
+        JsonNode events = ok(getApi("/api/group-orders/" + orderId + "/events", accessB));
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0).path("eventType").asText()).isEqualTo("DELAY_REPORTED");
+        assertThat(events.get(0).path("title").asText()).isEqualTo("商家出餐延迟");
+        assertThat(events.get(0).path("content").asText()).isEqualTo("预计晚到 10 分钟");
+    }
+
+    @Test
+    void v2RedisIdempotencyKeyRejectsDuplicateJoinWithoutDuplicateRows() throws Exception {
+        long suffix = System.currentTimeMillis();
+        register("idem_a_" + suffix, "幂等发起人");
+        Long memberId = register("idem_b_" + suffix, "幂等参与者");
+
+        String accessA = login("idem_a_" + suffix).path("accessToken").asText();
+        String accessB = login("idem_b_" + suffix).path("accessToken").asText();
+        Long orderId = createGroupOrder(accessA);
+
+        String idempotencyKey = "join-" + suffix;
+        JsonNode join = ok(postApiWithIdempotency(
+                "/api/group-orders/" + orderId + "/participants",
+                accessB,
+                idempotencyKey,
+                joinBody("幂等套餐", "18.00")
+        ));
+        Long participantId = join.path("participant").path("id").asLong();
+        assertThat(participantId).isPositive();
+
+        expectCode(postApiWithIdempotency(
+                        "/api/group-orders/" + orderId + "/participants",
+                        accessB,
+                        idempotencyKey,
+                        joinBody("幂等套餐", "18.00")),
+                409,
+                "重复提交，请勿重复操作");
+
+        assertThat(queryLong("select count(*) from order_participant where group_order_id = ? and user_id = ?", orderId, memberId))
+                .isEqualTo(1L);
+        assertThat(queryLong("select count(*) from meal_item where group_order_id = ? and participant_id = ?", orderId, participantId))
+                .isEqualTo(1L);
+        assertThat(queryLong("select participant_count from group_order where id = ?", orderId))
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void v2RedisShortLockRejectsConcurrentOrderWriteWithoutChangingOrder() throws Exception {
+        long suffix = System.currentTimeMillis();
+        register("lock_a_" + suffix, "短锁发起人");
+
+        String accessA = login("lock_a_" + suffix).path("accessToken").asText();
+        Long orderId = createGroupOrder(accessA);
+        stringRedisTemplate.opsForValue().set("group-order:lock:write:" + orderId, "external-lock");
+
+        expectCode(postApi(
+                        "/api/group-orders/" + orderId + "/cancel",
+                        accessA,
+                        "{\"cancelReason\":\"短锁占用时取消\"}"),
+                409,
+                "拼单操作处理中，请稍后重试");
+
+        assertThat(queryString("select status from group_order where id = ?", orderId)).isEqualTo("CREATED");
+        assertThat(queryLong("select count(*) from group_order_event where group_order_id = ?", orderId))
+                .isZero();
+        assertThat(queryLong("select count(*) from order_status_log where group_order_id = ? and action_type = 'CANCEL_ORDER'", orderId))
+                .isZero();
+    }
+
     private Long register(String username, String nickname) throws Exception {
         JsonNode data = ok(postApi(
                 "/api/auth/register",
@@ -316,6 +425,22 @@ class MvpFlowIntegrationTest {
         return mockMvc.perform(builder);
     }
 
+    private ResultActions postApiWithIdempotency(
+            String path,
+            String accessToken,
+            String idempotencyKey,
+            String body) throws Exception {
+        var builder = post(path)
+                .contextPath(API_CONTEXT)
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Idempotency-Key", idempotencyKey)
+                .content(body);
+        if (accessToken != null) {
+            builder.header("Authorization", "Bearer " + accessToken);
+        }
+        return mockMvc.perform(builder);
+    }
+
     private ResultActions putApi(String path, String accessToken, String body) throws Exception {
         var builder = put(path)
                 .contextPath(API_CONTEXT)
@@ -359,6 +484,14 @@ class MvpFlowIntegrationTest {
 
     private void assertAmount(JsonNode node, String expected) {
         assertThat(node.decimalValue()).isEqualByComparingTo(new BigDecimal(expected));
+    }
+
+    private Long queryLong(String sql, Object... args) {
+        return jdbcTemplate.queryForObject(sql, Long.class, args);
+    }
+
+    private String queryString(String sql, Object... args) {
+        return jdbcTemplate.queryForObject(sql, String.class, args);
     }
 
     private boolean mysqlAvailable() {

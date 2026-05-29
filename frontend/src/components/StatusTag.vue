@@ -16,6 +16,7 @@ const tagTypeMap: Record<string, 'success' | 'info' | 'warning' | 'danger' | 'pr
   PICKED_UP: 'success',
   FINISHED: 'info',
   CANCELLED: 'danger',
+  EXPIRED: 'info',
   UNPAID: 'danger',
   PAID: 'warning',
   CONFIRMED: 'success',

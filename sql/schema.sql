@@ -7,6 +7,7 @@ SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
 DROP TABLE IF EXISTS `notification_record`;
+DROP TABLE IF EXISTS `group_order_event`;
 DROP TABLE IF EXISTS `order_status_log`;
 DROP TABLE IF EXISTS `pickup_record`;
 DROP TABLE IF EXISTS `payment_record`;
@@ -71,15 +72,23 @@ CREATE TABLE `group_order` (
   `remark` varchar(512) DEFAULT NULL COMMENT '拼单备注',
   `locked_time` datetime DEFAULT NULL COMMENT '锁单时间',
   `finish_time` datetime DEFAULT NULL COMMENT '完成时间',
+  `cancel_user_id` bigint DEFAULT NULL COMMENT '取消操作人用户 ID，逻辑关联 user.id',
+  `cancel_reason` varchar(255) DEFAULT NULL COMMENT '取消原因',
   `cancel_time` datetime DEFAULT NULL COMMENT '取消时间',
+  `expired_time` datetime DEFAULT NULL COMMENT '系统超时关闭时间',
+  `expire_reason` varchar(255) DEFAULT NULL COMMENT '超时关闭原因',
+  `version` int NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
+  `last_event_time` datetime DEFAULT NULL COMMENT '最近事件时间',
   `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
   PRIMARY KEY (`id`),
   KEY `idx_group_order_status_deadline` (`status`, `deadline_time`),
+  KEY `idx_group_order_deadline_status` (`deadline_time`, `status`),
   KEY `idx_group_order_status_create` (`status`, `create_time`),
   KEY `idx_group_order_creator` (`creator_id`, `create_time`),
   KEY `idx_group_order_pickup_user` (`pickup_user_id`, `status`),
-  KEY `idx_group_order_type` (`order_type`, `status`)
+  KEY `idx_group_order_type` (`order_type`, `status`),
+  KEY `idx_group_order_status_last_event` (`status`, `last_event_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='拼单主表';
 
 CREATE TABLE `order_participant` (
@@ -176,6 +185,26 @@ CREATE TABLE `order_status_log` (
   KEY `idx_status_log_target` (`target_type`, `target_id`, `create_time`),
   KEY `idx_status_log_operator` (`operator_id`, `create_time`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='拼单状态日志表';
+
+CREATE TABLE `group_order_event` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '拼单事件 ID',
+  `group_order_id` bigint NOT NULL COMMENT '拼单 ID，逻辑关联 group_order.id',
+  `event_type` varchar(32) NOT NULL COMMENT '事件类型，如 CANCEL、EXPIRED、DELAY、EXCEPTION',
+  `event_level` varchar(32) NOT NULL DEFAULT 'INFO' COMMENT '事件级别：INFO、WARN、ERROR',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人用户 ID，系统事件可为空，逻辑关联 user.id',
+  `operator_role` varchar(32) DEFAULT NULL COMMENT '操作人角色：CREATOR、PICKUP_USER、PARTICIPANT、SYSTEM',
+  `title` varchar(100) NOT NULL COMMENT '事件标题',
+  `content` varchar(500) DEFAULT NULL COMMENT '事件内容',
+  `before_status` varchar(32) DEFAULT NULL COMMENT '事件前拼单主状态',
+  `after_status` varchar(32) DEFAULT NULL COMMENT '事件后拼单主状态',
+  `event_time` datetime NOT NULL COMMENT '事件发生时间',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_group_order_event_order_time` (`group_order_id`, `event_time`),
+  KEY `idx_group_order_event_type_time` (`event_type`, `event_time`),
+  KEY `idx_group_order_event_operator` (`operator_id`, `event_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='拼单事件记录表';
 
 CREATE TABLE `notification_record` (
   `id` bigint NOT NULL AUTO_INCREMENT COMMENT '通知记录 ID',

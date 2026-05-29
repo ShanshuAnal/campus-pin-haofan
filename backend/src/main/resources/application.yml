@@ -33,3 +33,14 @@ auth:
   token:
     secret: campus-pin-haofan-local-secret
     expire-hours: 24
+
+haofan:
+  rocketmq:
+    enabled: ${HAOFAN_ROCKETMQ_ENABLED:false}
+    name-server: ${HAOFAN_ROCKETMQ_NAME_SERVER:localhost:9876}
+    access-key: ${HAOFAN_ROCKETMQ_ACCESS_KEY:}
+    secret-key: ${HAOFAN_ROCKETMQ_SECRET_KEY:}
+    producer-group: ${HAOFAN_ROCKETMQ_PRODUCER_GROUP:group-order-timeout-producer-group}
+    consumer-group: ${HAOFAN_ROCKETMQ_CONSUMER_GROUP:group-order-timeout-consumer-group}
+    topic: ${HAOFAN_ROCKETMQ_TOPIC:group-order-timeout-topic}
+    tag: ${HAOFAN_ROCKETMQ_TAG:GROUP_ORDER_TIMEOUT}

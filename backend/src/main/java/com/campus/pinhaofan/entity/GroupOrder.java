@@ -73,8 +73,26 @@ public class GroupOrder {
     @TableField("finish_time")
     private LocalDateTime finishTime;
 
+    @TableField("cancel_user_id")
+    private Long cancelUserId;
+
+    @TableField("cancel_reason")
+    private String cancelReason;
+
     @TableField("cancel_time")
     private LocalDateTime cancelTime;
+
+    @TableField("expired_time")
+    private LocalDateTime expiredTime;
+
+    @TableField("expire_reason")
+    private String expireReason;
+
+    @TableField("version")
+    private Integer version;
+
+    @TableField("last_event_time")
+    private LocalDateTime lastEventTime;
 
     @TableField("create_time")
     private LocalDateTime createTime;

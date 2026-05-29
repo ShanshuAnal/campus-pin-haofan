@@ -12,7 +12,8 @@ public enum GroupOrderStatus {
     ARRIVED("ARRIVED"),
     PICKED_UP("PICKED_UP"),
     FINISHED("FINISHED"),
-    CANCELLED("CANCELLED");
+    CANCELLED("CANCELLED"),
+    EXPIRED("EXPIRED");
 
     private final String value;
 

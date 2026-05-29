@@ -6,6 +6,21 @@
 
 V2 API 设计保留当前 MVP 已完成能力，并新增取消拼单、超时关闭、履约事件、并发保护和产品化前端所需的数据结构。
 
+## 1.1 V2 前端开发依赖
+
+前端 V2 改版必须以本文为接口契约，不再按旧后台式页面自行推断字段。
+
+| 前端模块 | 依赖接口 | 关键字段 |
+| --- | --- | --- |
+| 拼单大厅 | `GET /api/group-orders` | `status`、`joinable`、`remainingSeconds`、`progressPercent`、`participantCount`、`lastEventSummary` |
+| 发起拼单 | `POST /api/group-orders` | `title`、`shopName`、`pickupLocation`、`deadlineTime`、`minAmount`、`discountAmount`、`creatorItems` |
+| 拼单详情 | `GET /api/group-orders/{id}` | `permissions`、`participants`、`pickup`、`recentEvents` |
+| 取消拼单 | `POST /api/group-orders/{id}/cancel` | `cancelReason`、`status`、`cancelTime` |
+| 延迟/异常事件 | `/api/group-orders/{id}/events` | `eventType`、`eventLevel`、`title`、`content`、`eventTime` |
+| 我的拼单 | `GET /api/group-orders/my` | `scope`、终态 `FINISHED/CANCELLED/EXPIRED` |
+
+前端可自行派生状态文案、按钮文案、进度颜色和时间展示，但不得改变后端状态语义。
+
 ## 2. 接口原则
 
 - 拼单相关 API 统一使用 `/api/group-orders`。
@@ -16,6 +31,29 @@ V2 API 设计保留当前 MVP 已完成能力，并新增取消拼单、超时�
 - 核心状态以 MySQL 为准。
 - Redis 可用于黑名单、防重复提交、短时锁和缓存。
 - RocketMQ 只用于异步通知、超时检查和统计聚合，不作为核心状态源。
+
+## 2.1 V2 可见性规则
+
+拼单大厅、详情页和事件时间线必须按以下规则控制可见性：
+
+| 场景 | 可见范围 | 后端要求 | 前端要求 |
+| --- | --- | --- | --- |
+| 拼单大厅 | 公开可加入拼单，以及当前用户相关拼单 | 只返回 `CREATED` 且可加入的公开拼单，以及当前用户作为发起人、参与者或取餐人的拼单 | 不展示后端未返回的非相关拼单 |
+| `CREATED` 拼单详情 | 登录用户可查看公开详情 | 允许未参与用户查看，并根据 `permissions.canJoin` 判断是否可加入 | 可展示加入入口，但必须以 `canJoin` 为准 |
+| `LOCKED` 及之后详情 | 仅相关用户可查看 | 仅发起人、参与者、取餐人可查看；无关用户返回 `403` 或 `404` | 无权时展示友好提示，不暴露 raw 后端错误 |
+| 事件时间线 | 仅相关用户可见 | 仅发起人、参与者、取餐人可查询事件 | `permissions.canViewEvents=false` 时不得请求事件接口 |
+
+相关用户定义：
+
+- 拼单发起人；
+- 拼单参与者；
+- 当前取餐人；
+- 后续如引入管理员，应单独定义管理权限，不默认进入学生主流程。
+
+错误展示规则：
+
+- 前端不得直接展示 raw 后端异常、堆栈、SQL 错误、Java 异常类名或未处理的英文错误。
+- 前端应按 HTTP 状态码和业务错误码映射为用户可理解文案，例如“你无权查看该拼单”“拼单已截止”“拼单状态已变化，请刷新后重试”。
 
 ## 3. 通用规范
 
@@ -315,6 +353,9 @@ GET /api/group-orders
 - 拼单大厅优先呈现可加入拼单；
 - 卡片需要突出店铺、取餐点、截止时间、凑单进度和成员数；
 - 不按管理后台表格作为主要体验。
+- `joinable = false` 时前端不得展示“加入”主按钮；
+- `remainingSeconds <= 0` 且状态仍为 `CREATED` 时，前端应展示“等待系统关闭”或“已截止待处理”，不要允许继续加入；
+- `lastEventSummary` 只作为提示文案，不作为状态判断依据。
 
 ## 7. 拼单详情
 
@@ -338,6 +379,9 @@ GET /api/group-orders/{id}
     "deadlineTime": "2026-05-29T18:30:00",
     "minAmount": "60.00",
     "totalAmount": "80.00",
+    "participantCount": 3,
+    "originalTotalAmount": "80.00",
+    "payableTotalAmount": "70.00",
     "discountAmount": "10.00",
     "status": "LOCKED",
     "creator": {
@@ -356,7 +400,8 @@ GET /api/group-orders/{id}
       "canMarkPayment": true,
       "canConfirmPayment": false,
       "canUpdatePickupStatus": false,
-      "canCreateEvent": false
+      "canCreateEvent": false,
+      "canViewEvents": true
     },
     "participants": [
       {
@@ -392,6 +437,11 @@ GET /api/group-orders/{id}
 - 顶部展示状态、倒计时、取餐点和核心操作；
 - 中部展示成员点单与金额分摊；
 - 底部展示付款、取餐和事件时间线。
+- 前端按钮必须以 `permissions` 为准，不能只按本地用户 ID 推断；
+- `recentEvents` 用于详情页首屏展示最近事件，完整事件列表调用事件查询接口；
+- `pickup.pickupStatus = DISTRIBUTED` 时，页面应展示拼单已完成，不再展示付款或取餐推进主操作。
+- `permissions.canViewEvents=false` 时，前端不得请求 `GET /api/group-orders/{id}/events`；
+- 无关用户访问 `LOCKED` 及之后拼单详情时，前端应展示无权限提示，不展示 raw 后端错误。
 
 ## 8. 创建与加入拼单
 
@@ -411,11 +461,35 @@ POST /api/group-orders
   "deadlineTime": "2026-05-29T18:30:00",
   "minAmount": "60.00",
   "discountAmount": "10.00",
-  "remark": "满 60 减 10"
+  "remark": "满 60 减 10",
+  "creatorItems": [
+    {
+      "itemName": "牛肉饭",
+      "unitPrice": "28.00",
+      "quantity": 1
+    }
+  ]
 }
 ```
 
 响应：返回拼单详情。
+
+规则：
+
+- `creatorItems` 为可选字段，表示发起人自己的点餐内容；
+- 若 `creatorItems` 非空，后端创建拼单后必须自动生成发起人的 `order_participant` 记录和对应 `meal_item` 明细；
+- 自动生成发起人参与记录后，必须同步更新 `group_order.participant_count`、`group_order.original_total_amount`、`group_order.payable_total_amount`；
+- 在 `CREATED` 未锁单阶段，未生效优惠前 `payable_total_amount` 默认等于 `original_total_amount`；
+- 若 `creatorItems` 为空或未传，允许只创建空拼单，`participant_count`、`original_total_amount`、`payable_total_amount` 初始为 0，但前端默认应引导发起人填写自己的餐品；
+- 自动加入后，发起人已有参与记录，不能再通过加入接口重复加入自己的拼单；
+- 创建拼单、创建发起人参与记录、创建餐品明细和更新金额汇总必须在同一事务中完成；
+- 本规则复用现有 `order_participant` 和 `meal_item` 表，不修改数据库结构。
+
+前端规则：
+
+- 发起拼单表单默认展示“我的点餐”区域，并鼓励填写；
+- 用户仍可选择先创建空拼单；
+- 创建成功后直接跳转拼单详情页，不再要求发起人手动进入详情后再加入自己。
 
 ### 8.2 加入拼单
 
@@ -442,6 +516,7 @@ POST /api/group-orders/{id}/participants
 
 - 只有 `CREATED` 状态可加入；
 - 同一用户不能重复加入同一拼单；
+- 如果发起人在创建时已通过 `creatorItems` 自动生成参与记录，则发起人再次调用加入接口应返回 `409`；
 - 后端必须重新计算成员原始金额和拼单总金额；
 - 并发加入以 MySQL 唯一约束和事务为准。
 
@@ -591,8 +666,15 @@ V2 必做。
 允许状态：
 
 ```text
-CREATED, LOCKED, ORDERED
+CREATED, LOCKED
 ```
+
+状态规则：
+
+- `CREATED`：发起人可直接取消；
+- `LOCKED`：仅在无人标记付款时允许普通取消；
+- `ORDERED`、`DELIVERING`、`ARRIVED`、`PICKED_UP`：不走普通取消，后续如需处理应记录延迟/异常事件并线下协调；
+- `FINISHED`、`CANCELLED`、`EXPIRED`：终态不可取消。
 
 响应：
 
@@ -612,8 +694,18 @@ CREATED, LOCKED, ORDERED
 规则：
 
 - 取消后不能加入、锁定、付款或推进取餐；
-- 已付款成员的退款由线下协商处理；
+- 已有人付款时不允许普通取消，需通过事件记录异常并线下协商；
 - 系统写入 `GroupOrderEvent` 和状态日志。
+
+错误场景：
+
+| 场景 | 响应 |
+| --- | --- |
+| 非发起人取消 | `403` |
+| 取消原因为空 | `400` |
+| `LOCKED` 且已有成员付款 | `409` |
+| `ORDERED` 或后续履约状态取消 | `409` |
+| 终态取消 | `409` |
 
 ### 11.2 超时自动关闭
 
@@ -673,6 +765,12 @@ V2 必做。
 ```http
 GET /api/group-orders/{id}/events
 ```
+
+权限：
+
+- 仅拼单发起人、参与者、取餐人可查询；
+- 无关用户返回 `403` 或 `404`；
+- 前端必须先读取详情接口中的 `permissions.canViewEvents`，为 `false` 时不得请求本接口。
 
 响应：
 
@@ -770,3 +868,14 @@ V2 可选增强。
 | 并发保护 | 写接口状态校验和幂等头 | V2 必做 |
 | Redis 防重复提交和缓存 | 写接口和查询接口增强 | V2 可选增强 |
 | RocketMQ 通知和统计 | 异步增强 | V2 可选增强 |
+
+## 17. V2 前端联调顺序
+
+| 顺序 | 前端任务 | API 依赖 | 说明 |
+| --- | --- | --- | --- |
+| 1 | API 类型和状态映射整理 | 本文状态枚举和响应示例 | 统一 `GroupOrderStatus`、`PaymentStatus`、`PickupStatus`、`GroupOrderEvent` 类型 |
+| 2 | 拼单大厅产品化 | `GET /api/group-orders` | 改为卡片、倒计时、凑单进度、可加入判断 |
+| 3 | 详情页流程式改版 | `GET /api/group-orders/{id}` | 按状态、权限、金额、付款、取餐、事件组织页面 |
+| 4 | 取消拼单联调 | `POST /api/group-orders/{id}/cancel` | 发起人展示取消入口，按错误码提示不可取消原因 |
+| 5 | 延迟/异常事件联调 | `/api/group-orders/{id}/events` | 事件写入后刷新详情和事件时间线 |
+| 6 | 超时关闭展示 | 大厅/详情状态字段 | `EXPIRED` 进入历史，不允许加入或继续主流程操作 |

@@ -17,7 +17,8 @@ export const orderStatusText: Record<GroupOrderStatus, string> = {
   ARRIVED: '已到达',
   PICKED_UP: '已取餐',
   FINISHED: '已完成',
-  CANCELLED: '已取消'
+  CANCELLED: '已取消',
+  EXPIRED: '已过期'
 }
 
 export const paymentStatusText: Record<PaymentStatus, string> = {

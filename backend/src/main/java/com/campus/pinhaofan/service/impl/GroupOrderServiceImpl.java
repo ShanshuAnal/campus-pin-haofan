@@ -1,10 +1,13 @@
 package com.campus.pinhaofan.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.campus.pinhaofan.common.AuthTokenUtil;
 import com.campus.pinhaofan.common.DateTimeUtil;
+import com.campus.pinhaofan.dto.CancelGroupOrderRequest;
+import com.campus.pinhaofan.dto.CreateGroupOrderEventRequest;
 import com.campus.pinhaofan.dto.CreateGroupOrderRequest;
 import com.campus.pinhaofan.dto.JoinGroupOrderRequest;
 import com.campus.pinhaofan.dto.LockGroupOrderRequest;
@@ -12,28 +15,37 @@ import com.campus.pinhaofan.dto.PaymentRequest;
 import com.campus.pinhaofan.dto.PickupAssigneeRequest;
 import com.campus.pinhaofan.dto.PickupStatusUpdateRequest;
 import com.campus.pinhaofan.entity.GroupOrder;
+import com.campus.pinhaofan.entity.GroupOrderEvent;
 import com.campus.pinhaofan.entity.MealItem;
 import com.campus.pinhaofan.entity.OrderParticipant;
 import com.campus.pinhaofan.entity.OrderStatusLog;
 import com.campus.pinhaofan.entity.PaymentRecord;
 import com.campus.pinhaofan.entity.PickupRecord;
 import com.campus.pinhaofan.entity.User;
+import com.campus.pinhaofan.enums.GroupOrderEventLevel;
+import com.campus.pinhaofan.enums.GroupOrderEventType;
 import com.campus.pinhaofan.enums.GroupOrderStatus;
 import com.campus.pinhaofan.enums.PaymentStatus;
 import com.campus.pinhaofan.enums.PickupStatus;
 import com.campus.pinhaofan.enums.ResultCode;
 import com.campus.pinhaofan.exception.BusinessException;
 import com.campus.pinhaofan.mapper.GroupOrderMapper;
+import com.campus.pinhaofan.mapper.GroupOrderEventMapper;
 import com.campus.pinhaofan.mapper.MealItemMapper;
 import com.campus.pinhaofan.mapper.OrderParticipantMapper;
 import com.campus.pinhaofan.mapper.OrderStatusLogMapper;
 import com.campus.pinhaofan.mapper.PaymentRecordMapper;
 import com.campus.pinhaofan.mapper.PickupRecordMapper;
 import com.campus.pinhaofan.mapper.UserMapper;
+import com.campus.pinhaofan.messaging.GroupOrderTimeoutMessagePublisher;
 import com.campus.pinhaofan.service.GroupOrderService;
+import com.campus.pinhaofan.vo.CancelGroupOrderVO;
 import com.campus.pinhaofan.vo.DashboardRankItemVO;
 import com.campus.pinhaofan.vo.DashboardSummaryVO;
 import com.campus.pinhaofan.vo.GroupOrderDetailVO;
+import com.campus.pinhaofan.vo.GroupOrderEventVO;
+import com.campus.pinhaofan.vo.GroupOrderPermissionsVO;
+import com.campus.pinhaofan.vo.GroupOrderTimeoutCheckVO;
 import com.campus.pinhaofan.vo.GroupOrderVO;
 import com.campus.pinhaofan.vo.JoinGroupOrderVO;
 import com.campus.pinhaofan.vo.LockAllocationVO;
@@ -78,6 +90,8 @@ public class GroupOrderServiceImpl implements GroupOrderService {
     private static final String TARGET_TYPE_PICKUP_RECORD = "PICKUP_RECORD";
     private static final String ACTION_TYPE_CREATE_ORDER = "CREATE_ORDER";
     private static final String ACTION_TYPE_LOCK_ORDER = "LOCK_ORDER";
+    private static final String ACTION_TYPE_CANCEL_ORDER = "CANCEL_ORDER";
+    private static final String ACTION_TYPE_EXPIRE_ORDER = "EXPIRE_ORDER";
     private static final String ACTION_TYPE_ASSIGN_PICKUP = "ASSIGN_PICKUP";
     private static final String ACTION_TYPE_UPDATE_PICKUP_STATUS = "UPDATE_PICKUP_STATUS";
     private static final String ACTION_TYPE_UPDATE_ORDER_STATUS = "UPDATE_ORDER_STATUS";
@@ -88,6 +102,14 @@ public class GroupOrderServiceImpl implements GroupOrderService {
     private static final String MY_SCOPE_HISTORY = "HISTORY";
     private static final String DASHBOARD_SCOPE_ALL = "ALL";
     private static final String DASHBOARD_SCOPE_MINE = "MINE";
+    private static final String EVENT_TYPE_CANCELLED = "CANCELLED";
+    private static final String EVENT_TYPE_EXPIRED = "EXPIRED";
+    private static final String EVENT_LEVEL_INFO = "INFO";
+    private static final String OPERATOR_ROLE_CREATOR = "CREATOR";
+    private static final String OPERATOR_ROLE_PICKUP_USER = "PICKUP_USER";
+    private static final String OPERATOR_ROLE_PARTICIPANT = "PARTICIPANT";
+    private static final String OPERATOR_ROLE_SYSTEM = "SYSTEM";
+    private static final Long SYSTEM_OPERATOR_ID = 0L;
     private static final Set<String> ORDER_TYPES = Set.of("TAKEOUT", "CANTEEN", "MILK_TEA", "MIDNIGHT_SNACK");
     private static final Set<String> MY_GROUP_ORDER_SCOPES = Set.of(
             MY_SCOPE_CREATED_BY_ME,
@@ -98,7 +120,13 @@ public class GroupOrderServiceImpl implements GroupOrderService {
     );
     private static final Set<String> HISTORY_STATUSES = Set.of(
             GroupOrderStatus.FINISHED.getValue(),
-            GroupOrderStatus.CANCELLED.getValue()
+            GroupOrderStatus.CANCELLED.getValue(),
+            GroupOrderStatus.EXPIRED.getValue()
+    );
+    private static final Set<String> TERMINAL_STATUSES = Set.of(
+            GroupOrderStatus.FINISHED.getValue(),
+            GroupOrderStatus.CANCELLED.getValue(),
+            GroupOrderStatus.EXPIRED.getValue()
     );
     private static final String DEFAULT_GROUP_ORDER_SORT =
             "ORDER BY CASE WHEN status IN ('CREATED','LOCKED','ORDERED','DELIVERING','ARRIVED','PICKED_UP') "
@@ -113,11 +141,13 @@ public class GroupOrderServiceImpl implements GroupOrderService {
     private final AuthTokenUtil authTokenUtil;
     private final UserMapper userMapper;
     private final GroupOrderMapper groupOrderMapper;
+    private final GroupOrderEventMapper groupOrderEventMapper;
     private final OrderParticipantMapper orderParticipantMapper;
     private final MealItemMapper mealItemMapper;
     private final PickupRecordMapper pickupRecordMapper;
     private final OrderStatusLogMapper orderStatusLogMapper;
     private final PaymentRecordMapper paymentRecordMapper;
+    private final GroupOrderTimeoutMessagePublisher groupOrderTimeoutMessagePublisher;
 
     @Override
     public PageResultVO<GroupOrderVO> listGroupOrders(
@@ -127,7 +157,7 @@ public class GroupOrderServiceImpl implements GroupOrderService {
             String keyword,
             Long pageNum,
             Long pageSize) {
-        requireCurrentUser(authorization);
+        User currentUser = requireCurrentUser(authorization);
         String normalizedStatus = normalize(status);
         String normalizedOrderType = normalize(orderType);
         String normalizedKeyword = normalize(keyword);
@@ -148,6 +178,7 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                         .like(GroupOrder::getTitle, normalizedKeyword)
                         .or()
                         .like(GroupOrder::getMerchantName, normalizedKeyword));
+        applyHallVisibility(wrapper, currentUser.getId(), LocalDateTime.now());
         if (normalizedStatus.isEmpty()) {
             wrapper.last(DEFAULT_GROUP_ORDER_SORT);
         } else {
@@ -194,20 +225,26 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         order.setRemark(request.getRemark());
 
         groupOrderMapper.insert(order);
+        createCreatorParticipantIfNeeded(order, creator.getId(), request.getCreatorItems());
         insertCreateStatusLog(order, creator.getId());
+        groupOrderTimeoutMessagePublisher.sendTimeoutMessage(order.getId(), deadlineTime);
 
         return toVO(order, Map.of(creator.getId(), creator));
     }
 
     @Override
     public GroupOrderDetailVO getGroupOrderDetail(String authorization, Long orderId) {
-        requireCurrentUser(authorization);
+        User currentUser = requireCurrentUser(authorization);
         GroupOrder order = getExistingOrder(orderId);
         List<OrderParticipant> participants = orderParticipantMapper.selectList(
                 new LambdaQueryWrapper<OrderParticipant>()
                         .eq(OrderParticipant::getGroupOrderId, orderId)
                         .orderByAsc(OrderParticipant::getJoinTime)
         );
+        boolean relatedUser = isRelatedUser(order, participants, currentUser.getId());
+        if (!GroupOrderStatus.CREATED.getValue().equals(order.getStatus()) && !relatedUser) {
+            throw new BusinessException(ResultCode.FORBIDDEN.getCode(), "No permission to view group order detail");
+        }
         List<MealItem> mealItems = mealItemMapper.selectList(
                 new LambdaQueryWrapper<MealItem>()
                         .eq(MealItem::getGroupOrderId, orderId)
@@ -236,7 +273,8 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                 participantViews,
                 pickupRecordView,
                 toOrderAmountVO(order),
-                pickupRecordView == null ? null : pickupRecordView.getPickupStatus()
+                pickupRecordView == null ? null : pickupRecordView.getPickupStatus(),
+                buildPermissions(order, participants, pickupRecord, currentUser.getId())
         );
     }
 
@@ -379,6 +417,147 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                 toLockedGroupOrderVO(order),
                 participants.stream().map(this::toLockAllocationVO).toList()
         );
+    }
+
+    @Override
+    @Transactional
+    public CancelGroupOrderVO cancelGroupOrder(
+            String authorization,
+            Long orderId,
+            CancelGroupOrderRequest request) {
+        User currentUser = requireCurrentUser(authorization);
+        GroupOrder order = getExistingOrder(orderId);
+        String cancelReason = normalize(request == null ? null : request.getCancelReason());
+        if (cancelReason.isEmpty()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "cancelReason 不能为空");
+        }
+        if (cancelReason.length() > 255) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "cancelReason 长度不能超过 255");
+        }
+
+        validateCancelOrder(order, currentUser.getId());
+
+        String beforeStatus = order.getStatus();
+        LocalDateTime now = LocalDateTime.now();
+        order.setStatus(GroupOrderStatus.CANCELLED.getValue());
+        order.setCancelUserId(currentUser.getId());
+        order.setCancelReason(cancelReason);
+        order.setCancelTime(now);
+        order.setLastEventTime(now);
+        groupOrderMapper.updateById(order);
+
+        insertStatusLog(
+                orderId,
+                currentUser.getId(),
+                TARGET_TYPE_GROUP_ORDER,
+                orderId,
+                ACTION_TYPE_CANCEL_ORDER,
+                beforeStatus,
+                GroupOrderStatus.CANCELLED.getValue(),
+                cancelReason
+        );
+        insertGroupOrderEvent(
+                order,
+                EVENT_TYPE_CANCELLED,
+                currentUser.getId(),
+                OPERATOR_ROLE_CREATOR,
+                "取消拼单",
+                cancelReason,
+                beforeStatus,
+                GroupOrderStatus.CANCELLED.getValue(),
+                now
+        );
+
+        return new CancelGroupOrderVO(
+                order.getId(),
+                order.getStatus(),
+                order.getCancelReason(),
+                DateTimeUtil.format(order.getCancelTime())
+        );
+    }
+
+    @Override
+    @Transactional
+    public GroupOrderEventVO createGroupOrderEvent(
+            String authorization,
+            Long orderId,
+            CreateGroupOrderEventRequest request) {
+        User currentUser = requireCurrentUser(authorization);
+        GroupOrder order = getExistingOrder(orderId);
+        if (request == null) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "request body cannot be empty");
+        }
+        if (!Objects.equals(order.getCreatorId(), currentUser.getId())) {
+            throw new BusinessException(ResultCode.FORBIDDEN.getCode(), "Only creator can create order event");
+        }
+
+        String eventType = normalize(request == null ? null : request.getEventType());
+        GroupOrderEventType type = GroupOrderEventType.fromValue(eventType)
+                .orElseThrow(() -> new BusinessException(ResultCode.BAD_REQUEST.getCode(), "eventType is invalid"));
+        if (!type.isManuallyCreatable()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "eventType cannot be created manually");
+        }
+
+        String eventLevel = normalize(request.getEventLevel());
+        if (eventLevel.isEmpty()) {
+            eventLevel = GroupOrderEventLevel.INFO.getValue();
+        }
+        String finalEventLevel = eventLevel;
+        GroupOrderEventLevel.fromValue(finalEventLevel)
+                .orElseThrow(() -> new BusinessException(ResultCode.BAD_REQUEST.getCode(), "eventLevel is invalid"));
+
+        String eventTitle = normalize(request.getEventTitle());
+        if (eventTitle.isEmpty()) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "eventTitle cannot be blank");
+        }
+        if (eventTitle.length() > 100) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "eventTitle length cannot exceed 100");
+        }
+        String eventContent = normalize(request.getEventContent());
+        if (eventContent.length() > 500) {
+            throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "eventContent length cannot exceed 500");
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        GroupOrderEvent event = new GroupOrderEvent();
+        event.setGroupOrderId(order.getId());
+        event.setEventType(type.getValue());
+        event.setEventLevel(finalEventLevel);
+        event.setOperatorId(currentUser.getId());
+        event.setOperatorRole(OPERATOR_ROLE_CREATOR);
+        event.setTitle(eventTitle);
+        event.setContent(eventContent.isEmpty() ? null : eventContent);
+        event.setBeforeStatus(order.getStatus());
+        event.setAfterStatus(order.getStatus());
+        event.setEventTime(now);
+        event.setCreateTime(now);
+        event.setUpdateTime(now);
+        groupOrderEventMapper.insert(event);
+
+        GroupOrder updateOrder = new GroupOrder();
+        updateOrder.setId(order.getId());
+        updateOrder.setLastEventTime(now);
+        groupOrderMapper.updateById(updateOrder);
+
+        return toGroupOrderEventVO(event);
+    }
+
+    @Override
+    public List<GroupOrderEventVO> listGroupOrderEvents(String authorization, Long orderId) {
+        User currentUser = requireCurrentUser(authorization);
+        GroupOrder order = getExistingOrder(orderId);
+        if (!canViewGroupOrderEvents(order, currentUser.getId())) {
+            throw new BusinessException(ResultCode.FORBIDDEN.getCode(), "No permission to view order events");
+        }
+
+        return groupOrderEventMapper.selectList(
+                        new LambdaQueryWrapper<GroupOrderEvent>()
+                                .eq(GroupOrderEvent::getGroupOrderId, orderId)
+                                .orderByAsc(GroupOrderEvent::getEventTime)
+                                .orderByAsc(GroupOrderEvent::getId)
+                ).stream()
+                .map(this::toGroupOrderEventVO)
+                .toList();
     }
 
     @Override
@@ -737,12 +916,119 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         return toDashboardSummaryVO(orders, participants);
     }
 
+    @Override
+    @Transactional
+    public GroupOrderTimeoutCheckVO expireGroupOrderIfTimeout(Long orderId) {
+        GroupOrder order = groupOrderMapper.selectById(orderId);
+        if (order == null) {
+            throw new BusinessException(ResultCode.NOT_FOUND.getCode(), "拼单不存在");
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        if (!GroupOrderStatus.CREATED.getValue().equals(order.getStatus())) {
+            return new GroupOrderTimeoutCheckVO(
+                    orderId,
+                    false,
+                    order.getStatus(),
+                    "当前状态无需超时关闭",
+                    DateTimeUtil.format(order.getExpiredTime())
+            );
+        }
+        if (order.getDeadlineTime() == null || order.getDeadlineTime().isAfter(now)) {
+            return new GroupOrderTimeoutCheckVO(orderId, false, order.getStatus(), "未到截止时间", null);
+        }
+
+        String expireReason = "超过加入截止时间，系统自动关闭";
+        GroupOrder updateOrder = new GroupOrder();
+        updateOrder.setStatus(GroupOrderStatus.EXPIRED.getValue());
+        updateOrder.setExpiredTime(now);
+        updateOrder.setExpireReason(expireReason);
+        updateOrder.setLastEventTime(now);
+        int updated = groupOrderMapper.update(
+                updateOrder,
+                new LambdaUpdateWrapper<GroupOrder>()
+                        .eq(GroupOrder::getId, orderId)
+                        .eq(GroupOrder::getStatus, GroupOrderStatus.CREATED.getValue())
+                        .le(GroupOrder::getDeadlineTime, now)
+        );
+        if (updated <= 0) {
+            GroupOrder latest = groupOrderMapper.selectById(orderId);
+            return new GroupOrderTimeoutCheckVO(
+                    orderId,
+                    false,
+                    latest == null ? null : latest.getStatus(),
+                    "超时关闭已被其他操作处理",
+                    latest == null ? null : DateTimeUtil.format(latest.getExpiredTime())
+            );
+        }
+
+        order.setStatus(GroupOrderStatus.EXPIRED.getValue());
+        order.setExpiredTime(now);
+        order.setExpireReason(expireReason);
+        order.setLastEventTime(now);
+        insertStatusLog(
+                orderId,
+                SYSTEM_OPERATOR_ID,
+                TARGET_TYPE_GROUP_ORDER,
+                orderId,
+                ACTION_TYPE_EXPIRE_ORDER,
+                GroupOrderStatus.CREATED.getValue(),
+                GroupOrderStatus.EXPIRED.getValue(),
+                expireReason
+        );
+        insertGroupOrderEvent(
+                order,
+                EVENT_TYPE_EXPIRED,
+                null,
+                OPERATOR_ROLE_SYSTEM,
+                "拼单超时关闭",
+                expireReason,
+                GroupOrderStatus.CREATED.getValue(),
+                GroupOrderStatus.EXPIRED.getValue(),
+                now
+        );
+
+        return new GroupOrderTimeoutCheckVO(
+                orderId,
+                true,
+                GroupOrderStatus.EXPIRED.getValue(),
+                "拼单已超时关闭",
+                DateTimeUtil.format(now)
+        );
+    }
+
     private List<OrderParticipant> loadParticipantsByUser(Long userId) {
-        return orderParticipantMapper.selectList(
+        List<OrderParticipant> participants = orderParticipantMapper.selectList(
                 new LambdaQueryWrapper<OrderParticipant>()
                         .eq(OrderParticipant::getUserId, userId)
                         .orderByDesc(OrderParticipant::getJoinTime)
         );
+        return participants == null ? Collections.emptyList() : participants;
+    }
+
+    private void applyHallVisibility(
+            LambdaQueryWrapper<GroupOrder> wrapper,
+            Long currentUserId,
+            LocalDateTime now) {
+        Set<Long> joinedOrderIds = loadParticipantsByUser(currentUserId).stream()
+                .map(OrderParticipant::getGroupOrderId)
+                .collect(Collectors.toSet());
+        wrapper.and(visibility -> {
+            visibility.and(publicQuery -> publicQuery
+                            .eq(GroupOrder::getStatus, GroupOrderStatus.CREATED.getValue())
+                            .gt(GroupOrder::getDeadlineTime, now)
+                            .and(capacity -> capacity
+                                    .isNull(GroupOrder::getMaxParticipants)
+                                    .or()
+                                    .apply("participant_count < max_participants")))
+                    .or()
+                    .eq(GroupOrder::getCreatorId, currentUserId)
+                    .or()
+                    .eq(GroupOrder::getPickupUserId, currentUserId);
+            if (!joinedOrderIds.isEmpty()) {
+                visibility.or().in(GroupOrder::getId, joinedOrderIds);
+            }
+        });
     }
 
     private boolean shouldReturnEmptyMyOrders(
@@ -986,8 +1272,7 @@ public class GroupOrderServiceImpl implements GroupOrderService {
     }
 
     private void validatePickupMutable(GroupOrder order) {
-        if (GroupOrderStatus.FINISHED.getValue().equals(order.getStatus())
-                || GroupOrderStatus.CANCELLED.getValue().equals(order.getStatus())) {
+        if (TERMINAL_STATUSES.contains(order.getStatus())) {
             throw new BusinessException(ResultCode.CONFLICT.getCode(), "拼单已取消或已完成");
         }
     }
@@ -1002,6 +1287,78 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                         .eq(OrderParticipant::getUserId, userId)
         );
         return count != null && count > 0;
+    }
+
+    private boolean canViewGroupOrderEvents(GroupOrder order, Long userId) {
+        if (Objects.equals(order.getCreatorId(), userId) || Objects.equals(order.getPickupUserId(), userId)) {
+            return true;
+        }
+        Long count = orderParticipantMapper.selectCount(
+                new LambdaQueryWrapper<OrderParticipant>()
+                        .eq(OrderParticipant::getGroupOrderId, order.getId())
+                        .eq(OrderParticipant::getUserId, userId)
+        );
+        return count != null && count > 0;
+    }
+
+    private boolean isRelatedUser(GroupOrder order, List<OrderParticipant> participants, Long userId) {
+        return Objects.equals(order.getCreatorId(), userId)
+                || Objects.equals(order.getPickupUserId(), userId)
+                || participants.stream().anyMatch(participant -> Objects.equals(participant.getUserId(), userId));
+    }
+
+    private GroupOrderPermissionsVO buildPermissions(
+            GroupOrder order,
+            List<OrderParticipant> participants,
+            PickupRecord pickupRecord,
+            Long currentUserId) {
+        OrderParticipant currentParticipant = participants.stream()
+                .filter(participant -> Objects.equals(participant.getUserId(), currentUserId))
+                .findFirst()
+                .orElse(null);
+        boolean isCreator = Objects.equals(order.getCreatorId(), currentUserId);
+        boolean isPickupUser = Objects.equals(order.getPickupUserId(), currentUserId)
+                || pickupRecord != null && Objects.equals(pickupRecord.getPickupUserId(), currentUserId);
+        boolean isParticipant = currentParticipant != null;
+        boolean terminal = TERMINAL_STATUSES.contains(order.getStatus());
+        boolean paymentAllowed = PAYMENT_ALLOWED_ORDER_STATUSES.contains(order.getStatus());
+
+        return new GroupOrderPermissionsVO(
+                canJoin(order, isParticipant),
+                isCreator && GroupOrderStatus.CREATED.getValue().equals(order.getStatus()),
+                canCancel(order, participants, isCreator),
+                paymentAllowed
+                        && isParticipant
+                        && PaymentStatus.UNPAID.getValue().equals(currentParticipant.getPaymentStatus()),
+                paymentAllowed && isCreator,
+                !terminal && (isCreator || isPickupUser),
+                isCreator,
+                isCreator || isParticipant || isPickupUser
+        );
+    }
+
+    private boolean canJoin(GroupOrder order, boolean isParticipant) {
+        int participantCount = order.getParticipantCount() == null ? 0 : order.getParticipantCount();
+        boolean notFull = order.getMaxParticipants() == null || participantCount < order.getMaxParticipants();
+        return GroupOrderStatus.CREATED.getValue().equals(order.getStatus())
+                && order.getDeadlineTime() != null
+                && order.getDeadlineTime().isAfter(LocalDateTime.now())
+                && !isParticipant
+                && notFull;
+    }
+
+    private boolean canCancel(GroupOrder order, List<OrderParticipant> participants, boolean isCreator) {
+        if (!isCreator) {
+            return false;
+        }
+        if (GroupOrderStatus.CREATED.getValue().equals(order.getStatus())) {
+            return true;
+        }
+        if (!GroupOrderStatus.LOCKED.getValue().equals(order.getStatus())) {
+            return false;
+        }
+        return participants.stream()
+                .noneMatch(participant -> !PaymentStatus.UNPAID.getValue().equals(participant.getPaymentStatus()));
     }
 
     private void validatePickupStatusTransition(String beforeStatus, String targetStatus) {
@@ -1128,7 +1485,11 @@ public class GroupOrderServiceImpl implements GroupOrderService {
     }
 
     private BigDecimal calculateOriginalAmount(JoinGroupOrderRequest request) {
-        return request.getMealItems().stream()
+        return calculateOriginalAmount(request.getMealItems());
+    }
+
+    private BigDecimal calculateOriginalAmount(List<JoinGroupOrderRequest.MealItemRequest> mealItems) {
+        return mealItems.stream()
                 .map(this::calculateSubtotalAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .setScale(2, RoundingMode.HALF_UP);
@@ -1176,6 +1537,40 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         if (!GroupOrderStatus.CREATED.getValue().equals(order.getStatus())) {
             throw new BusinessException(ResultCode.CONFLICT.getCode(), "当前状态不能锁单");
         }
+    }
+
+    private void validateCancelOrder(GroupOrder order, Long userId) {
+        if (!Objects.equals(order.getCreatorId(), userId)) {
+            throw new BusinessException(ResultCode.FORBIDDEN.getCode(), "只有发起人可以取消拼单");
+        }
+        if (GroupOrderStatus.CREATED.getValue().equals(order.getStatus())) {
+            return;
+        }
+        if (GroupOrderStatus.LOCKED.getValue().equals(order.getStatus())) {
+            if (hasPaidParticipant(order.getId())) {
+                throw new BusinessException(ResultCode.CONFLICT.getCode(), "已有成员付款，不能取消拼单");
+            }
+            return;
+        }
+        if (GroupOrderStatus.ORDERED.getValue().equals(order.getStatus())
+                || GroupOrderStatus.DELIVERING.getValue().equals(order.getStatus())
+                || GroupOrderStatus.ARRIVED.getValue().equals(order.getStatus())
+                || GroupOrderStatus.PICKED_UP.getValue().equals(order.getStatus())) {
+            throw new BusinessException(ResultCode.CONFLICT.getCode(), "当前状态不支持普通取消，请记录异常事件");
+        }
+        if (TERMINAL_STATUSES.contains(order.getStatus())) {
+            throw new BusinessException(ResultCode.CONFLICT.getCode(), "拼单已取消、已完成或已过期，不能取消");
+        }
+        throw new BusinessException(ResultCode.CONFLICT.getCode(), "当前状态不能取消拼单");
+    }
+
+    private boolean hasPaidParticipant(Long orderId) {
+        Long count = orderParticipantMapper.selectCount(
+                new LambdaQueryWrapper<OrderParticipant>()
+                        .eq(OrderParticipant::getGroupOrderId, orderId)
+                        .ne(OrderParticipant::getPaymentStatus, PaymentStatus.UNPAID.getValue())
+        );
+        return count != null && count > 0;
     }
 
     private BigDecimal calculateActualDiscountAmount(GroupOrder order, BigDecimal originalTotalAmount) {
@@ -1234,6 +1629,49 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                 && request.getDiscountThresholdAmount() == null) {
             throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "discountThresholdAmount 不能为空");
         }
+        if (request.getCreatorItems() != null) {
+            for (JoinGroupOrderRequest.MealItemRequest creatorItem : request.getCreatorItems()) {
+                validateMealItem(creatorItem);
+            }
+        }
+    }
+
+    private void createCreatorParticipantIfNeeded(
+            GroupOrder order,
+            Long creatorId,
+            List<JoinGroupOrderRequest.MealItemRequest> creatorItems) {
+        if (creatorItems == null || creatorItems.isEmpty()) {
+            return;
+        }
+
+        BigDecimal originalAmount = calculateOriginalAmount(creatorItems);
+        LocalDateTime now = LocalDateTime.now();
+
+        OrderParticipant participant = new OrderParticipant();
+        participant.setGroupOrderId(order.getId());
+        participant.setUserId(creatorId);
+        participant.setOriginalAmount(originalAmount);
+        participant.setDiscountShareAmount(BigDecimal.ZERO);
+        participant.setPayableAmount(originalAmount);
+        participant.setRoundingAdjustmentAmount(BigDecimal.ZERO);
+        participant.setPaymentStatus(PaymentStatus.UNPAID.getValue());
+        participant.setJoinTime(now);
+        participant.setRemark("发起人自动加入");
+
+        try {
+            orderParticipantMapper.insert(participant);
+        } catch (DuplicateKeyException exception) {
+            throw new BusinessException(ResultCode.CONFLICT.getCode(), "不能重复加入同一拼单");
+        }
+
+        List<MealItem> mealItems = creatorItems.stream()
+                .map(itemRequest -> toMealItem(order.getId(), participant.getId(), itemRequest))
+                .toList();
+        for (MealItem mealItem : mealItems) {
+            mealItemMapper.insert(mealItem);
+        }
+
+        updateOrderAmountAfterJoin(order, originalAmount);
     }
 
     private User requireCurrentUser(String authorization) {
@@ -1292,6 +1730,47 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         log.setAfterStatus(afterStatus);
         log.setRemark(remark);
         orderStatusLogMapper.insert(log);
+    }
+
+    private void insertGroupOrderEvent(
+            GroupOrder order,
+            String eventType,
+            Long operatorId,
+            String operatorRole,
+            String title,
+            String content,
+            String beforeStatus,
+            String afterStatus,
+            LocalDateTime eventTime) {
+        GroupOrderEvent event = new GroupOrderEvent();
+        event.setGroupOrderId(order.getId());
+        event.setEventType(eventType);
+        event.setEventLevel(EVENT_LEVEL_INFO);
+        event.setOperatorId(operatorId);
+        event.setOperatorRole(operatorRole);
+        event.setTitle(title);
+        event.setContent(content);
+        event.setBeforeStatus(beforeStatus);
+        event.setAfterStatus(afterStatus);
+        event.setEventTime(eventTime);
+        groupOrderEventMapper.insert(event);
+    }
+
+    private GroupOrderEventVO toGroupOrderEventVO(GroupOrderEvent event) {
+        return new GroupOrderEventVO(
+                event.getId(),
+                event.getGroupOrderId(),
+                event.getEventType(),
+                event.getEventLevel(),
+                event.getOperatorId(),
+                event.getOperatorRole(),
+                event.getTitle(),
+                event.getContent(),
+                event.getBeforeStatus(),
+                event.getAfterStatus(),
+                DateTimeUtil.format(event.getEventTime()),
+                DateTimeUtil.format(event.getCreateTime())
+        );
     }
 
     private Map<Long, User> loadUsers(List<GroupOrder> orders) {

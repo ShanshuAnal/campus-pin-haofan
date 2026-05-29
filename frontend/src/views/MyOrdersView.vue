@@ -62,7 +62,7 @@ onMounted(() => loadMyOrders())
     <div class="page-header">
       <div>
         <h1>我的拼单</h1>
-        <p>汇总我发起、参与和负责取餐的拼单，便于课堂演示状态流转。</p>
+        <p>汇总我发起、参与和负责取餐的拼单，便于跟进付款与取餐状态。</p>
       </div>
     </div>
 

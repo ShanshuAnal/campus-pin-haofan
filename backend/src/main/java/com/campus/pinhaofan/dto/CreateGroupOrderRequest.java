@@ -1,9 +1,11 @@
 package com.campus.pinhaofan.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.Valid;
 import lombok.Data;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 @Data
 public class CreateGroupOrderRequest {
@@ -30,4 +32,7 @@ public class CreateGroupOrderRequest {
     private BigDecimal discountAmount;
 
     private String remark;
+
+    @Valid
+    private List<JoinGroupOrderRequest.MealItemRequest> creatorItems;
 }

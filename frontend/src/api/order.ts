@@ -3,11 +3,14 @@ import type { PageResult } from '@/types/api'
 import type {
   AssignPickupRequest,
   AssignPickupResponse,
+  CancelGroupOrderRequest,
+  CancelGroupOrderResponse,
   ConfirmPaymentResponse,
   CreateGroupOrderRequest,
   DashboardSummary,
   DashboardSummaryQuery,
   GroupOrderDetail,
+  GroupOrderEvent,
   GroupOrderQuery,
   GroupOrderSummary,
   JoinGroupOrderRequest,
@@ -23,6 +26,136 @@ import type {
 } from '@/types/order'
 
 const unwrap = <T>(request: Promise<unknown>) => request as Promise<T>
+type LooseRecord = Record<string, any>
+
+const asUserSummary = (payload: LooseRecord | null | undefined) => ({
+  id: Number(payload?.id ?? payload?.userId ?? 0),
+  username: String(payload?.username ?? payload?.account ?? ''),
+  nickname: String(payload?.nickname ?? payload?.username ?? payload?.account ?? '同学'),
+  phone: payload?.phone ?? null,
+  status: payload?.status ?? 'ACTIVE'
+})
+
+const normalizeGroupOrderDetail = (payload: unknown): GroupOrderDetail => {
+  const raw = payload as LooseRecord
+  if (raw.order) {
+    const detail = raw as GroupOrderDetail
+    return {
+      ...detail,
+      pickup: detail.pickup ?? (detail.pickupRecord
+        ? {
+            pickupStatus: detail.pickupRecord.pickupStatus,
+            pickupLocation: detail.pickupRecord.pickupLocation,
+            pickupUser: detail.pickupRecord.pickupUser
+          }
+        : null),
+      recentEvents: detail.recentEvents ?? []
+    }
+  }
+
+  const order = {
+    id: Number(raw.id),
+    title: String(raw.title ?? ''),
+    orderType: raw.orderType ?? 'TAKEOUT',
+    merchantName: String(raw.merchantName ?? raw.shopName ?? ''),
+    shopName: raw.shopName,
+    pickupLocation: String(raw.pickupLocation ?? raw.pickup?.pickupLocation ?? ''),
+    creator: asUserSummary(raw.creator),
+    deadlineTime: String(raw.deadlineTime ?? ''),
+    maxParticipants: Number(raw.maxParticipants ?? raw.maxParticipantCount ?? raw.participantLimit ?? 1),
+    participantCount: Number(raw.participantCount ?? raw.participants?.length ?? 0),
+    minAmount: raw.minAmount ?? raw.discountThresholdAmount,
+    discountThresholdAmount: raw.discountThresholdAmount ?? raw.minAmount ?? null,
+    discountAmount: Number(raw.discountAmount ?? 0),
+    originalTotalAmount: Number(raw.originalTotalAmount ?? raw.totalAmount ?? 0),
+    actualDiscountAmount: Number(raw.actualDiscountAmount ?? 0),
+    payableTotalAmount: Number(raw.payableTotalAmount ?? raw.payableAmount ?? raw.totalAmount ?? 0),
+    roundingAdjustmentAmount: Number(raw.roundingAdjustmentAmount ?? 0),
+    status: raw.status,
+    joinable: raw.joinable,
+    progressPercent: raw.progressPercent,
+    remainingSeconds: raw.remainingSeconds,
+    lastEventSummary: raw.lastEventSummary ?? null,
+    canViewDetail: raw.canViewDetail ?? raw.viewable,
+    viewable: raw.viewable ?? raw.canViewDetail,
+    pickupUser: raw.pickupUser ? asUserSummary(raw.pickupUser) : (raw.pickup?.pickupUser ? asUserSummary(raw.pickup.pickupUser) : null),
+    remark: String(raw.remark ?? ''),
+    lockedTime: raw.lockedTime ?? null,
+    finishTime: raw.finishTime ?? null,
+    cancelTime: raw.cancelTime ?? null,
+    cancelReason: raw.cancelReason ?? null,
+    expiredTime: raw.expiredTime ?? null,
+    expireReason: raw.expireReason ?? null,
+    createTime: String(raw.createTime ?? ''),
+    updateTime: String(raw.updateTime ?? '')
+  } as GroupOrderSummary
+
+  const participants = (raw.participants ?? []).map((participant: LooseRecord) => ({
+    id: Number(participant.id),
+    groupOrderId: Number(participant.groupOrderId ?? raw.id),
+    user: asUserSummary(participant.user ?? participant),
+    originalAmount: Number(participant.originalAmount ?? 0),
+    discountShareAmount: Number(participant.discountShareAmount ?? participant.shareDiscountAmount ?? 0),
+    payableAmount: Number(participant.payableAmount ?? 0),
+    roundingAdjustmentAmount: Number(participant.roundingAdjustmentAmount ?? 0),
+    paymentStatus: participant.paymentStatus ?? 'UNPAID',
+    paidMarkTime: participant.paidMarkTime ?? null,
+    paidConfirmTime: participant.paidConfirmTime ?? null,
+    joinTime: String(participant.joinTime ?? ''),
+    remark: String(participant.remark ?? ''),
+    mealItems: (participant.mealItems ?? participant.items ?? []).map((item: LooseRecord) => ({
+      id: Number(item.id ?? 0),
+      groupOrderId: Number(item.groupOrderId ?? raw.id),
+      participantId: Number(item.participantId ?? participant.id),
+      itemName: String(item.itemName ?? ''),
+      quantity: Number(item.quantity ?? 1),
+      unitPrice: Number(item.unitPrice ?? 0),
+      subtotalAmount: Number(item.subtotalAmount ?? Number(item.unitPrice ?? 0) * Number(item.quantity ?? 1)),
+      remark: String(item.remark ?? '')
+    }))
+  }))
+
+  const pickupRecord = raw.pickupRecord
+    ? raw.pickupRecord
+    : raw.pickup
+      ? {
+          id: 0,
+          groupOrderId: Number(raw.id),
+          pickupUser: raw.pickup.pickupUser ? asUserSummary(raw.pickup.pickupUser) : (order.pickupUser ?? asUserSummary(null)),
+          pickupLocation: raw.pickup.pickupLocation ?? order.pickupLocation,
+          pickupStatus: raw.pickup.pickupStatus,
+          estimatedArrivalTime: null,
+          actualArrivalTime: null,
+          pickedUpTime: null,
+          distributedTime: null,
+          remark: ''
+        }
+      : null
+
+  return {
+    order,
+    participants,
+    pickupRecord,
+    pickup: raw.pickup ?? (pickupRecord
+      ? {
+          pickupStatus: pickupRecord.pickupStatus,
+          pickupLocation: pickupRecord.pickupLocation,
+          pickupUser: pickupRecord.pickupUser
+        }
+      : null),
+    permissions: raw.permissions,
+    currentUserRole: raw.currentUserRole,
+    recentEvents: raw.recentEvents ?? []
+  }
+}
+
+const normalizeCreatedOrder = (payload: unknown): GroupOrderSummary => {
+  const raw = payload as LooseRecord
+  if (raw.order) {
+    return normalizeGroupOrderDetail(payload).order
+  }
+  return normalizeGroupOrderDetail(payload).order
+}
 
 export const orderApi = {
   listGroupOrders: (params: GroupOrderQuery) =>
@@ -32,8 +165,10 @@ export const orderApi = {
       })
     ),
   createGroupOrder: (data: CreateGroupOrderRequest) =>
-    unwrap<GroupOrderSummary>(http.post('/group-orders', data)),
-  getGroupOrderDetail: (id: number) => unwrap<GroupOrderDetail>(http.get(`/group-orders/${id}`)),
+    http.post('/group-orders', data).then(normalizeCreatedOrder),
+  getGroupOrderDetail: (id: number) => http.get(`/group-orders/${id}`).then(normalizeGroupOrderDetail),
+  listGroupOrderEvents: (id: number) =>
+    unwrap<GroupOrderEvent[]>(http.get(`/group-orders/${id}/events`)),
   joinGroupOrder: (id: number, data: JoinGroupOrderRequest) =>
     unwrap<JoinGroupOrderResponse>(http.post(`/group-orders/${id}/participants`, data)),
   lockGroupOrder: (id: number, data: LockGroupOrderRequest) =>
@@ -42,6 +177,8 @@ export const orderApi = {
     unwrap<MarkPaymentResponse>(
       http.post(`/group-orders/${orderId}/participants/${participantId}/payments/mark`, data)
     ),
+  cancelGroupOrder: (id: number, data: CancelGroupOrderRequest) =>
+    unwrap<CancelGroupOrderResponse>(http.post(`/group-orders/${id}/cancel`, data)),
   confirmPayment: (orderId: number, participantId: number, data: PaymentActionRequest) =>
     unwrap<ConfirmPaymentResponse>(
       http.post(`/group-orders/${orderId}/participants/${participantId}/payments/confirm`, data)

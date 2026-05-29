@@ -20,4 +20,6 @@ public class GroupOrderDetailVO {
     private OrderAmountVO orderAmount;
 
     private String pickupStatus;
+
+    private GroupOrderPermissionsVO permissions;
 }
