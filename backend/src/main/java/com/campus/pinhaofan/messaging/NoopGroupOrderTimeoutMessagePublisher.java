@@ -8,6 +8,7 @@ import java.time.LocalDateTime;
 
 @Slf4j
 @Component
+@Deprecated
 @ConditionalOnProperty(prefix = "haofan.rocketmq", name = "enabled", havingValue = "false", matchIfMissing = true)
 public class NoopGroupOrderTimeoutMessagePublisher implements GroupOrderTimeoutMessagePublisher {
 

@@ -26,6 +26,7 @@ public class RocketMqGroupOrderTimeoutMessagePublisher
         implements GroupOrderTimeoutMessagePublisher, InitializingBean, DisposableBean {
 
     private static final String START_DELIVER_TIME_PROPERTY = "__STARTDELIVERTIME";
+    private static final long TIMEOUT_DELIVERY_BUFFER_SECONDS = 5L;
 
     private final RocketMqProperties properties;
 
@@ -57,13 +58,16 @@ public class RocketMqGroupOrderTimeoutMessagePublisher
                     buildMessageKey(orderId),
                     String.valueOf(orderId).getBytes(StandardCharsets.UTF_8)
             );
-            long deliverTimeMillis = deadlineTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+            LocalDateTime deliveryTime = calculateDeliveryTime(deadlineTime);
+            long deliverTimeMillis = deliveryTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
             message.putUserProperty(START_DELIVER_TIME_PROPERTY, String.valueOf(deliverTimeMillis));
             message.putUserProperty("orderId", String.valueOf(orderId));
             SendResult result = producer.send(message);
             log.info(
-                    "RocketMQ timeout message sent. orderId={}, topic={}, tag={}, msgId={}, sendStatus={}",
+                    "RocketMQ timeout message sent. orderId={}, deadlineTime={}, deliveryTime={}, topic={}, tag={}, msgId={}, sendStatus={}",
                     orderId,
+                    deadlineTime,
+                    deliveryTime,
                     properties.getTopic(),
                     properties.getTag(),
                     result.getMsgId(),
@@ -88,6 +92,10 @@ public class RocketMqGroupOrderTimeoutMessagePublisher
 
     private String buildMessageKey(Long orderId) {
         return "group-order-timeout-" + orderId;
+    }
+
+    static LocalDateTime calculateDeliveryTime(LocalDateTime deadlineTime) {
+        return deadlineTime.plusSeconds(TIMEOUT_DELIVERY_BUFFER_SECONDS);
     }
 
     private void validateProperties() {

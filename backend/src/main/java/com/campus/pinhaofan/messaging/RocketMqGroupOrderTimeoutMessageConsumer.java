@@ -2,6 +2,7 @@ package com.campus.pinhaofan.messaging;
 
 import com.campus.pinhaofan.config.RocketMqProperties;
 import com.campus.pinhaofan.service.GroupOrderService;
+import com.campus.pinhaofan.vo.GroupOrderTimeoutCheckVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.acl.common.AclClientRPCHook;
@@ -18,6 +19,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 @Slf4j
 @Component
@@ -25,8 +28,11 @@ import java.nio.charset.StandardCharsets;
 @ConditionalOnProperty(prefix = "haofan.rocketmq", name = "enabled", havingValue = "true")
 public class RocketMqGroupOrderTimeoutMessageConsumer implements InitializingBean, DisposableBean {
 
+    private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
     private final RocketMqProperties properties;
     private final GroupOrderService groupOrderService;
+    private final GroupOrderTimeoutMessagePublisher groupOrderTimeoutMessagePublisher;
 
     private DefaultMQPushConsumer consumer;
 
@@ -66,7 +72,36 @@ public class RocketMqGroupOrderTimeoutMessageConsumer implements InitializingBea
 
     public void consumeTimeoutMessage(Long orderId) {
         log.info("Consume group order timeout message. orderId={}", orderId);
-        groupOrderService.expireGroupOrderIfTimeout(orderId);
+        GroupOrderTimeoutCheckVO result = groupOrderService.expireGroupOrderIfTimeout(orderId);
+        if (Boolean.TRUE.equals(result.getExpired())) {
+            log.info(
+                    "Timeout message expired group order. orderId={}, expireTime={}",
+                    orderId,
+                    result.getExpireTime()
+            );
+            return;
+        }
+        if (Boolean.TRUE.equals(result.getRetryRequired())) {
+            LocalDateTime deadlineTime = LocalDateTime.parse(result.getDeadlineTime(), DATE_TIME_FORMATTER);
+            log.warn(
+                    "Timeout message arrived before deadline, republish once. orderId={}, deadlineTime={}",
+                    orderId,
+                    deadlineTime
+            );
+            groupOrderTimeoutMessagePublisher.sendTimeoutMessage(orderId, deadlineTime);
+            log.info(
+                    "Timeout message republished. orderId={}, deadlineTime={}",
+                    orderId,
+                    deadlineTime
+            );
+            return;
+        }
+        log.info(
+                "Timeout message ignored idempotently. orderId={}, status={}, message={}",
+                orderId,
+                result.getStatus(),
+                result.getMessage()
+        );
     }
 
     @Override

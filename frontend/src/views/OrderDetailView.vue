@@ -111,6 +111,11 @@ const remainingSeconds = computed(() => {
   return Math.floor((parseDeadline.value - Date.now()) / 1000)
 })
 
+const isCreatedPastDeadline = computed(() =>
+  order.value?.status === 'CREATED' && remainingSeconds.value !== null && remainingSeconds.value <= 0
+)
+const isOperationClosed = computed(() => isTerminal.value || isCreatedPastDeadline.value)
+
 const deadlineText = computed(() => {
   if (!order.value) return '-'
   if (order.value.status === 'FINISHED') return '已完成'
@@ -140,33 +145,32 @@ const payableTotal = computed(() => Number(order.value?.payableTotalAmount ?? 0)
 const actualDiscount = computed(() => Number(order.value?.actualDiscountAmount ?? 0))
 
 const canJoinOrder = computed(() => {
-  if (isTerminal.value) return false
+  if (isOperationClosed.value) return false
   if (typeof permissions.value.canJoin === 'boolean') return permissions.value.canJoin
   return Boolean(
     order.value?.status === 'CREATED' &&
       !currentParticipant.value &&
-      !isTerminal.value &&
       order.value.participantCount < order.value.maxParticipants &&
       (remainingSeconds.value === null || remainingSeconds.value > 0)
   )
 })
 const canLockOrder = computed(() => {
-  if (isTerminal.value) return false
+  if (isOperationClosed.value) return false
   if (typeof permissions.value.canLock === 'boolean') return permissions.value.canLock
   return Boolean(isCreator.value && order.value?.status === 'CREATED')
 })
 const canAssignPickup = computed(() => {
-  if (isTerminal.value) return false
+  if (isOperationClosed.value) return false
   if (typeof permissions.value.canAssignPickupUser === 'boolean') return permissions.value.canAssignPickupUser
-  return Boolean(isCreator.value && !isTerminal.value && detail.value?.participants.length)
+  return Boolean(isCreator.value && detail.value?.participants.length)
 })
 const canUpdatePickup = computed(() => {
-  if (isTerminal.value) return false
+  if (isOperationClosed.value) return false
   if (typeof permissions.value.canUpdatePickupStatus === 'boolean') return permissions.value.canUpdatePickupStatus
-  return Boolean((isCreator.value || isPickupUser.value) && pickupStatus.value && pickupStatus.value !== 'DISTRIBUTED' && !isTerminal.value)
+  return Boolean((isCreator.value || isPickupUser.value) && pickupStatus.value && pickupStatus.value !== 'DISTRIBUTED')
 })
 const canCancelOrder = computed(() => {
-  if (!order.value || isTerminal.value) return false
+  if (!order.value || isOperationClosed.value) return false
   if (!['CREATED', 'LOCKED'].includes(order.value.status)) return false
   if (typeof permissions.value.canCancel === 'boolean') return permissions.value.canCancel
   return isCreator.value
@@ -182,6 +186,7 @@ const eventsHiddenText = computed(() => {
 const cancelDisabledReason = computed(() => {
   if (!order.value) return ''
   if (isTerminal.value) return '终态拼单不可取消'
+  if (isCreatedPastDeadline.value) return '已超过截止时间，等待系统关闭，不能继续取消或推进流程'
   if (['ORDERED', 'DELIVERING', 'ARRIVED', 'PICKED_UP'].includes(order.value.status)) {
     return '已进入履约阶段，普通取消已关闭，请通过事件记录异常并线下协商'
   }
@@ -199,6 +204,7 @@ const pickupStepActive = computed(() => {
 
 const flowActive = computed(() => {
   const status = order.value?.status
+  if (['CANCELLED', 'EXPIRED'].includes(status ?? '') || isCreatedPastDeadline.value) return 1
   if (status === 'FINISHED') return flowSteps.value.length
   if (['ARRIVED', 'PICKED_UP'].includes(status ?? '') || pickupStatus.value) return 4
   if (paidCount.value > 0 || ['ORDERED', 'DELIVERING'].includes(status ?? '')) return 3
@@ -207,26 +213,60 @@ const flowActive = computed(() => {
   return 0
 })
 
-const flowSteps = computed(() => [
-  { title: '发起', description: order.value?.creator.nickname ?? '-' },
-  { title: '加入', description: `${detail.value?.participants.length ?? 0}/${order.value?.maxParticipants ?? 0} 人` },
-  { title: '锁单', description: order.value?.lockedTime ? '已生成分摊' : '等待锁单' },
-  { title: '付款', description: `${paidCount.value}/${detail.value?.participants.length ?? 0} 已标记` },
-  { title: '取餐', description: pickupStatus.value ? pickupStatusText[pickupStatus.value] : '待指定' },
-  { title: '完成', description: order.value?.status === 'FINISHED' ? '已完成' : '未完成' }
-])
+const flowProcessStatus = computed(() =>
+  ['CANCELLED', 'EXPIRED'].includes(order.value?.status ?? '') || isCreatedPastDeadline.value ? 'error' : 'process'
+)
+
+const flowSteps = computed(() => {
+  const creatorStep = { title: '发起', description: order.value?.creator.nickname ?? '-' }
+
+  if (order.value?.status === 'EXPIRED') {
+    return [
+      creatorStep,
+      { title: '已超时关闭', description: order.value.expiredTime || order.value.expireReason || '暂无' }
+    ]
+  }
+
+  if (order.value?.status === 'CANCELLED') {
+    return [
+      creatorStep,
+      { title: '已取消', description: order.value.cancelTime || order.value.cancelReason || '暂无' }
+    ]
+  }
+
+  if (isCreatedPastDeadline.value) {
+    return [
+      creatorStep,
+      { title: '已截止待处理', description: '等待系统关闭' }
+    ]
+  }
+
+  return [
+    creatorStep,
+    { title: '加入', description: `${detail.value?.participants.length ?? 0}/${order.value?.maxParticipants ?? 0} 人` },
+    { title: '锁单', description: order.value?.lockedTime ? '已生成分摊' : '等待锁单' },
+    { title: '付款', description: `${paidCount.value}/${detail.value?.participants.length ?? 0} 已标记` },
+    { title: '取餐', description: pickupStatus.value ? pickupStatusText[pickupStatus.value] : '待指定' },
+    { title: '完成', description: order.value?.status === 'FINISHED' ? '已完成' : '未完成' }
+  ]
+})
+
+const terminalTimeText = (label: string, value?: string | null) => `${label}：${value || '暂无'}`
 
 const terminalNotice = computed(() => {
   if (!order.value) return null
-  if (order.value.status === 'FINISHED') return { type: 'success', title: '拼单已完成', content: '餐品已分发，付款和取餐主流程已结束。' }
+  if (order.value.status === 'FINISHED') {
+    const time = terminalTimeText('完成时间', order.value.finishTime)
+    return { type: 'success', title: '拼单已完成', content: `餐品已分发，付款和取餐主流程已结束。${time}。` }
+  }
   if (order.value.status === 'CANCELLED') {
     const reason = order.value.cancelReason || '发起人已取消该拼单'
-    const time = order.value.cancelTime ? `取消时间：${order.value.cancelTime}` : '取消时间：暂无'
+    const time = terminalTimeText('取消时间', order.value.cancelTime)
     return { type: 'warning', title: '拼单已取消', content: `${reason}。${time}。不能继续加入、锁单、付款或推进取餐。` }
   }
   if (order.value.status === 'EXPIRED') {
-    const time = order.value.expiredTime ? `关闭时间：${order.value.expiredTime}` : '关闭时间：暂无'
-    return { type: 'info', title: '系统已超时关闭', content: `${order.value.expireReason || '系统因超过截止时间关闭该拼单'}。${time}。不能继续加入、锁单、付款或推进取餐。` }
+    const time = terminalTimeText('关闭时间', order.value.expiredTime)
+    return { type: 'info', title: '已超时关闭', content: `${order.value.expireReason || '系统因超过截止时间关闭该拼单'}。${time}。不能继续加入、锁单、付款或推进取餐。` }
   }
   return null
 })
@@ -238,9 +278,27 @@ const inlineExceptionNotice = computed(() => {
   return null
 })
 
+const nextActionTitle = computed(() => {
+  if (isTerminal.value) return '主流程已结束'
+  if (isCreatedPastDeadline.value) return '已截止待处理'
+  return '当前暂无可执行操作'
+})
+
+const nextActionText = computed(() => {
+  if (!order.value) return ''
+  if (order.value.status === 'EXPIRED') return '已超时关闭，不能继续加入、锁单、付款或推进取餐。'
+  if (order.value.status === 'CANCELLED') return '已取消，不能继续加入、锁单、付款或推进取餐。'
+  if (order.value.status === 'FINISHED') return '已完成，付款和取餐主流程已结束。'
+  if (isCreatedPastDeadline.value) return '已超过截止时间，等待系统关闭，不能继续加入、锁单、取消、付款或推进取餐。'
+  return '可查看成员、付款、取餐和事件进展。'
+})
+
 const eventTypeText: Record<string, string> = {
+  CANCEL: '取消',
   CANCELLED: '取消',
-  EXPIRED: '超时',
+  EXPIRED: '超时关闭',
+  DELAY: '延迟',
+  EXCEPTION: '异常',
   DELAY_REPORTED: '延迟',
   MERCHANT_DELAY: '商家延迟',
   DELIVERY_DELAY: '配送延迟',
@@ -251,17 +309,49 @@ const eventTypeText: Record<string, string> = {
   NOTE: '备注'
 }
 
+const eventLevelText: Record<string, string> = {
+  INFO: '普通',
+  WARN: '提醒',
+  ERROR: '异常'
+}
+
+const eventDisplayTitle = (event: GroupOrderEvent) => {
+  if (event.eventType === 'EXPIRED') return '系统超时关闭'
+  if (['CANCEL', 'CANCELLED'].includes(event.eventType)) return '发起人取消拼单'
+  return event.title || eventTypeText[event.eventType] || '事件记录'
+}
+
+const eventOperatorText = (event: GroupOrderEvent) => {
+  const roleText = event.operatorRole && event.operatorRole !== 'SYSTEM' ? `（${event.operatorRole}）` : ''
+  if (event.operator?.nickname) return `${event.operator.nickname}${roleText}`
+  if (event.operatorName) return `${event.operatorName}${roleText}`
+  if (event.operatorRole === 'SYSTEM' || event.operatorId === null) return '系统'
+  if (event.operatorId) return `用户 #${event.operatorId}${roleText}`
+  return event.operatorRole || '暂无'
+}
+
+const eventStatusText = (status?: string | null) => {
+  if (!status) return '暂无'
+  return orderStatusText[status as keyof typeof orderStatusText] ?? status
+}
+
 const eventTagType = (event: GroupOrderEvent) => {
   if (event.eventLevel === 'ERROR') return 'danger'
   if (event.eventLevel === 'WARN') return 'warning'
-  if (['CANCELLED', 'EXPIRED'].includes(event.eventType)) return 'info'
+  if (['CANCEL', 'CANCELLED', 'EXPIRED'].includes(event.eventType)) return 'info'
   return 'primary'
+}
+
+const eventLevelTagType = (event: GroupOrderEvent) => {
+  if (event.eventLevel === 'ERROR') return 'danger'
+  if (event.eventLevel === 'WARN') return 'warning'
+  return 'info'
 }
 
 const timelineType = (event: GroupOrderEvent) => {
   if (event.eventLevel === 'ERROR') return 'danger'
   if (event.eventLevel === 'WARN') return 'warning'
-  if (event.eventType === 'EXPIRED') return 'info'
+  if (['CANCEL', 'CANCELLED', 'EXPIRED'].includes(event.eventType)) return 'info'
   return 'primary'
 }
 
@@ -277,7 +367,7 @@ const formatMealItems = (participant: Participant) =>
     .join(' / ')
 
 const canMarkPayment = (participant: Participant) => {
-  if (isTerminal.value) return false
+  if (isOperationClosed.value) return false
   if (typeof permissions.value.canMarkPayment === 'boolean' && !permissions.value.canMarkPayment) return false
   return Boolean(
     participant.user.id === currentUserId.value &&
@@ -287,13 +377,16 @@ const canMarkPayment = (participant: Participant) => {
 }
 
 const canConfirmPayment = (participant: Participant) => {
-  if (isTerminal.value) return false
+  if (isOperationClosed.value) return false
   if (typeof permissions.value.canConfirmPayment === 'boolean' && !permissions.value.canConfirmPayment) return false
   return Boolean(isCreator.value && participant.paymentStatus === 'PAID')
 }
 
 const isWaitingForLockToPay = (participant: Participant) =>
-  participant.user.id === currentUserId.value && participant.paymentStatus === 'UNPAID' && order.value?.status === 'CREATED'
+  !isOperationClosed.value &&
+  participant.user.id === currentUserId.value &&
+  participant.paymentStatus === 'UNPAID' &&
+  order.value?.status === 'CREATED'
 
 const loadEventsIfAllowed = async (id: number) => {
   if (!canViewEvents.value) {
@@ -458,7 +551,8 @@ watch(
       <div class="detail-hero">
         <div class="detail-hero__main">
           <div class="detail-hero__title">
-            <StatusTag :status="order.status" />
+            <ElTag v-if="isCreatedPastDeadline" type="warning" effect="light" round>已截止待处理</ElTag>
+            <StatusTag v-else :status="order.status" />
             <h1>{{ order.title }}</h1>
             <p>{{ order.merchantName }} · {{ orderTypeText[order.orderType] }}</p>
           </div>
@@ -516,7 +610,7 @@ watch(
       />
 
       <div class="flow-panel">
-        <ElSteps :active="flowActive" finish-status="success" align-center>
+        <ElSteps :active="flowActive" finish-status="success" :process-status="flowProcessStatus" align-center>
           <ElStep v-for="step in flowSteps" :key="step.title" :title="step.title" :description="step.description" />
         </ElSteps>
       </div>
@@ -613,11 +707,11 @@ watch(
             </div>
           </section>
 
-          <section class="detail-section">
+          <section class="detail-section event-section" v-loading="orderStore.eventsLoading">
             <div class="section-title">
               <div>
                 <strong>事件时间线</strong>
-                <span>取消、超时、延迟和异常事件只做记录，不替代主状态</span>
+                <span>完整事件列表来自 /events，取消、超时、延迟和异常事件只做记录</span>
               </div>
               <ElButton v-if="canViewEvents" size="small" :loading="orderStore.eventsLoading" @click="loadEventsIfAllowed(order.id)">刷新事件</ElButton>
             </div>
@@ -636,12 +730,22 @@ watch(
                 :type="timelineType(event)"
               >
                 <div class="event-title">
-                  <strong>{{ event.title }}</strong>
-                  <ElTag size="small" :type="eventTagType(event)" effect="light">
-                    {{ eventTypeText[event.eventType] ?? event.eventType }}
-                  </ElTag>
+                  <strong>{{ eventDisplayTitle(event) }}</strong>
+                  <div class="event-tags">
+                    <ElTag size="small" :type="eventTagType(event)" effect="light">
+                      {{ eventTypeText[event.eventType] ?? event.eventType }}
+                    </ElTag>
+                    <ElTag size="small" :type="eventLevelTagType(event)" effect="plain">
+                      {{ eventLevelText[event.eventLevel] ?? event.eventLevel }}
+                    </ElTag>
+                  </div>
                 </div>
-                <p>{{ event.content }}</p>
+                <p>{{ event.content || '暂无事件内容' }}</p>
+                <div class="event-meta">
+                  <span>操作人：{{ eventOperatorText(event) }}</span>
+                  <span>事件时间：{{ event.eventTime || '暂无' }}</span>
+                  <span>状态变化：{{ eventStatusText(event.beforeStatus) }} → {{ eventStatusText(event.afterStatus) }}</span>
+                </div>
               </ElTimelineItem>
             </ElTimeline>
             <ElEmpty v-else description="暂无事件记录" />
@@ -758,8 +862,8 @@ watch(
           </section>
 
           <section v-if="!canJoinOrder && !canLockOrder && !canCancelOrder && !canAssignPickup && !canUpdatePickup" class="detail-section next-action">
-            <strong>{{ isTerminal ? '主流程已结束' : '当前暂无可执行操作' }}</strong>
-            <span>{{ isTerminal ? orderStatusText[order.status] : '可查看成员、付款、取餐和事件进展。' }}</span>
+            <strong>{{ nextActionTitle }}</strong>
+            <span>{{ nextActionText }}</span>
           </section>
         </aside>
       </div>
@@ -1019,6 +1123,35 @@ watch(
   gap: 10px;
 }
 
+.event-title strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.event-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.event-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #667085;
+  font-size: 12px;
+}
+
+.event-meta span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .inline-fields {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1183,7 +1316,8 @@ watch(
   }
 
   .amount-grid,
-  .inline-fields {
+  .inline-fields,
+  .event-meta {
     grid-template-columns: 1fr;
   }
 }

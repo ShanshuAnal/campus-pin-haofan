@@ -23,8 +23,11 @@ export type PickupStatus =
 export type OrderType = 'TAKEOUT' | 'CANTEEN' | 'MILK_TEA' | 'MIDNIGHT_SNACK'
 
 export type GroupOrderEventType =
+  | 'CANCEL'
   | 'CANCELLED'
   | 'EXPIRED'
+  | 'DELAY'
+  | 'EXCEPTION'
   | 'DELAY_REPORTED'
   | 'MERCHANT_DELAY'
   | 'DELIVERY_DELAY'
@@ -228,9 +231,13 @@ export interface GroupOrderEvent {
   eventLevel: GroupOrderEventLevel
   operatorId: number | null
   operatorRole: string | null
+  operatorName?: string | null
+  operator?: UserSummary | null
   title: string
   content: string
   eventTime: string
+  beforeStatus?: GroupOrderStatus | string | null
+  afterStatus?: GroupOrderStatus | string | null
 }
 
 export interface GroupOrderDetail {

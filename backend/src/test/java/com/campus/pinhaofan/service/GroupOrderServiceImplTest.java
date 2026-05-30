@@ -1019,6 +1019,34 @@ class GroupOrderServiceImplTest {
     }
 
     @Test
+    void listGroupOrderEventsQueriesAllEventsByEventTimeAndIdDesc() {
+        User member = user(MEMBER_ID, "20260002", "member");
+        GroupOrder order = baseOrder();
+        GroupOrderEvent latestEvent = groupOrderEvent("PAYMENT_DISPUTE", "WARN", "Payment issue", "Amount mismatch");
+        latestEvent.setId(9003L);
+        latestEvent.setEventTime(LocalDateTime.of(2026, 5, 29, 18, 45));
+        GroupOrderEvent sameTimeOlderEvent = groupOrderEvent("PICKUP_EXCEPTION", "WARN", "Pickup issue", "Queue too long");
+        sameTimeOlderEvent.setId(9002L);
+        sameTimeOlderEvent.setEventTime(LocalDateTime.of(2026, 5, 29, 18, 45));
+        GroupOrderEvent olderEvent = groupOrderEvent("DELAY_REPORTED", "INFO", "Delay", "Ten minutes late");
+        olderEvent.setId(9001L);
+        olderEvent.setEventTime(LocalDateTime.of(2026, 5, 29, 18, 30));
+        when(userMapper.selectById(MEMBER_ID)).thenReturn(member);
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
+        when(orderParticipantMapper.selectCount(any())).thenReturn(1L);
+        when(groupOrderEventMapper.selectList(any())).thenReturn(List.of(latestEvent, sameTimeOlderEvent, olderEvent));
+
+        List<GroupOrderEventVO> result = groupOrderService.listGroupOrderEvents(authorization(MEMBER_ID), ORDER_ID);
+
+        assertThat(result).extracting(GroupOrderEventVO::getId).containsExactly(9003L, 9002L, 9001L);
+        ArgumentCaptor<LambdaQueryWrapper> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(groupOrderEventMapper).selectList(wrapperCaptor.capture());
+        assertThat(wrapperCaptor.getValue().getSqlSegment())
+                .contains("group_order_id")
+                .containsIgnoringCase("ORDER BY event_time DESC,id DESC");
+    }
+
+    @Test
     void listGroupOrderEventsRejectsUnrelatedUser() {
         User outsider = user(THIRD_USER_ID, "20260003", "小周");
         GroupOrder order = baseOrder();

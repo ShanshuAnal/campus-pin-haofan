@@ -1,5 +1,6 @@
 package com.campus.pinhaofan.controller;
 
+import com.campus.pinhaofan.common.OperationLog;
 import com.campus.pinhaofan.common.Result;
 import com.campus.pinhaofan.service.GroupOrderService;
 import com.campus.pinhaofan.vo.GroupOrderTimeoutCheckVO;
@@ -17,6 +18,7 @@ public class InternalGroupOrderController {
     private final GroupOrderService groupOrderService;
 
     @PostMapping("/{orderId}/expire-check")
+    @OperationLog("手动触发超时关闭")
     public Result<GroupOrderTimeoutCheckVO> expireCheck(@PathVariable Long orderId) {
         return Result.success(groupOrderService.expireGroupOrderIfTimeout(orderId));
     }

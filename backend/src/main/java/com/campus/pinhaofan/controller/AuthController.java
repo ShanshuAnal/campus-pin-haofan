@@ -1,5 +1,6 @@
 package com.campus.pinhaofan.controller;
 
+import com.campus.pinhaofan.common.OperationLog;
 import com.campus.pinhaofan.common.Result;
 import com.campus.pinhaofan.dto.AuthLoginRequest;
 import com.campus.pinhaofan.dto.AuthLogoutRequest;
@@ -45,11 +46,13 @@ public class AuthController {
     }
 
     @PostMapping("/refresh")
+    @OperationLog("刷新 token")
     public Result<AuthLoginVO> refresh(@Valid @RequestBody AuthRefreshRequest request) {
         return Result.success(authService.refresh(request));
     }
 
     @PostMapping("/logout")
+    @OperationLog("登出")
     public Result<AuthLogoutVO> logout(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @Valid @RequestBody AuthLogoutRequest request) {

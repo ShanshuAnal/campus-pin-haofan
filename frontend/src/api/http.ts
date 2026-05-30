@@ -39,7 +39,7 @@ http.interceptors.response.use(
   (response) => {
     const payload = response.data as ApiResponse<unknown>
     if (typeof payload?.code === 'number' && payload.code !== 200) {
-      ElMessage.error(payload.message || '请求失败，请稍后重试')
+      ElMessage.error(friendlyErrorMessage(payload.code, payload.message))
       return Promise.reject(payload)
     }
     return payload?.data ?? response.data

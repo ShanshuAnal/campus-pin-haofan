@@ -63,6 +63,7 @@ import com.campus.pinhaofan.vo.PickupRecordVO;
 import com.campus.pinhaofan.vo.PickupStatusUpdateVO;
 import com.campus.pinhaofan.vo.UserSummaryVO;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -82,6 +83,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class GroupOrderServiceImpl implements GroupOrderService {
 
     private static final String ACTIVE_STATUS = "ACTIVE";
@@ -553,8 +555,8 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         return groupOrderEventMapper.selectList(
                         new LambdaQueryWrapper<GroupOrderEvent>()
                                 .eq(GroupOrderEvent::getGroupOrderId, orderId)
-                                .orderByAsc(GroupOrderEvent::getEventTime)
-                                .orderByAsc(GroupOrderEvent::getId)
+                                .orderByDesc(GroupOrderEvent::getEventTime)
+                                .orderByDesc(GroupOrderEvent::getId)
                 ).stream()
                 .map(this::toGroupOrderEventVO)
                 .toList();
@@ -926,16 +928,50 @@ public class GroupOrderServiceImpl implements GroupOrderService {
 
         LocalDateTime now = LocalDateTime.now();
         if (!GroupOrderStatus.CREATED.getValue().equals(order.getStatus())) {
+            log.info(
+                    "Ignore timeout message because order status changed. orderId={}, status={}, deadlineTime={}",
+                    orderId,
+                    order.getStatus(),
+                    order.getDeadlineTime()
+            );
             return new GroupOrderTimeoutCheckVO(
                     orderId,
                     false,
                     order.getStatus(),
                     "当前状态无需超时关闭",
-                    DateTimeUtil.format(order.getExpiredTime())
+                    DateTimeUtil.format(order.getExpiredTime()),
+                    DateTimeUtil.format(order.getDeadlineTime()),
+                    false
             );
         }
-        if (order.getDeadlineTime() == null || order.getDeadlineTime().isAfter(now)) {
-            return new GroupOrderTimeoutCheckVO(orderId, false, order.getStatus(), "未到截止时间", null);
+        if (order.getDeadlineTime() == null) {
+            log.warn("Timeout message ignored because deadline is missing. orderId={}", orderId);
+            return new GroupOrderTimeoutCheckVO(
+                    orderId,
+                    false,
+                    order.getStatus(),
+                    "截止时间缺失",
+                    null,
+                    null,
+                    false
+            );
+        }
+        if (order.getDeadlineTime().isAfter(now)) {
+            log.warn(
+                    "Timeout message consumed before deadline. orderId={}, deadlineTime={}, now={}",
+                    orderId,
+                    order.getDeadlineTime(),
+                    now
+            );
+            return new GroupOrderTimeoutCheckVO(
+                    orderId,
+                    false,
+                    order.getStatus(),
+                    "未到截止时间",
+                    null,
+                    DateTimeUtil.format(order.getDeadlineTime()),
+                    true
+            );
         }
 
         String expireReason = "超过加入截止时间，系统自动关闭";
@@ -953,12 +989,19 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         );
         if (updated <= 0) {
             GroupOrder latest = groupOrderMapper.selectById(orderId);
+            log.info(
+                    "Ignore timeout message because conditional expire update did not win. orderId={}, latestStatus={}",
+                    orderId,
+                    latest == null ? null : latest.getStatus()
+            );
             return new GroupOrderTimeoutCheckVO(
                     orderId,
                     false,
                     latest == null ? null : latest.getStatus(),
                     "超时关闭已被其他操作处理",
-                    latest == null ? null : DateTimeUtil.format(latest.getExpiredTime())
+                    latest == null ? null : DateTimeUtil.format(latest.getExpiredTime()),
+                    latest == null ? null : DateTimeUtil.format(latest.getDeadlineTime()),
+                    false
             );
         }
 
@@ -987,13 +1030,21 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                 GroupOrderStatus.EXPIRED.getValue(),
                 now
         );
+        log.info(
+                "Group order expired successfully. orderId={}, deadlineTime={}, expiredTime={}",
+                orderId,
+                order.getDeadlineTime(),
+                now
+        );
 
         return new GroupOrderTimeoutCheckVO(
                 orderId,
                 true,
                 GroupOrderStatus.EXPIRED.getValue(),
                 "拼单已超时关闭",
-                DateTimeUtil.format(now)
+                DateTimeUtil.format(now),
+                DateTimeUtil.format(order.getDeadlineTime()),
+                false
         );
     }
 

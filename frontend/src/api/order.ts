@@ -80,12 +80,12 @@ const normalizeGroupOrderDetail = (payload: unknown): GroupOrderDetail => {
     viewable: raw.viewable ?? raw.canViewDetail,
     pickupUser: raw.pickupUser ? asUserSummary(raw.pickupUser) : (raw.pickup?.pickupUser ? asUserSummary(raw.pickup.pickupUser) : null),
     remark: String(raw.remark ?? ''),
-    lockedTime: raw.lockedTime ?? null,
-    finishTime: raw.finishTime ?? null,
-    cancelTime: raw.cancelTime ?? null,
-    cancelReason: raw.cancelReason ?? null,
-    expiredTime: raw.expiredTime ?? null,
-    expireReason: raw.expireReason ?? null,
+    lockedTime: raw.lockedTime ?? raw.locked_time ?? null,
+    finishTime: raw.finishTime ?? raw.finish_time ?? null,
+    cancelTime: raw.cancelTime ?? raw.cancel_time ?? null,
+    cancelReason: raw.cancelReason ?? raw.cancel_reason ?? null,
+    expiredTime: raw.expiredTime ?? raw.expired_time ?? null,
+    expireReason: raw.expireReason ?? raw.expire_reason ?? null,
     createTime: String(raw.createTime ?? ''),
     updateTime: String(raw.updateTime ?? '')
   } as GroupOrderSummary
@@ -157,6 +157,39 @@ const normalizeCreatedOrder = (payload: unknown): GroupOrderSummary => {
   return normalizeGroupOrderDetail(payload).order
 }
 
+const normalizeGroupOrderEvent = (payload: unknown): GroupOrderEvent => {
+  const raw = payload as LooseRecord
+  const operator = raw.operator ? asUserSummary(raw.operator) : null
+
+  return {
+    id: Number(raw.id ?? 0),
+    eventType: raw.eventType ?? raw.event_type ?? 'NOTE',
+    eventLevel: raw.eventLevel ?? raw.event_level ?? raw.level ?? 'INFO',
+    operatorId: raw.operatorId ?? raw.operator_id ?? operator?.id ?? null,
+    operatorRole: raw.operatorRole ?? raw.operator_role ?? null,
+    operatorName: raw.operatorName ?? raw.operator_name ?? operator?.nickname ?? null,
+    operator,
+    title: String(raw.title ?? ''),
+    content: String(raw.content ?? ''),
+    eventTime: String(raw.eventTime ?? raw.event_time ?? ''),
+    beforeStatus: raw.beforeStatus ?? raw.before_status ?? null,
+    afterStatus: raw.afterStatus ?? raw.after_status ?? null
+  }
+}
+
+const normalizeGroupOrderEvents = (payload: unknown): GroupOrderEvent[] => {
+  const raw = payload as LooseRecord
+  const records = Array.isArray(payload)
+    ? payload
+    : Array.isArray(raw.records)
+      ? raw.records
+      : Array.isArray(raw.list)
+        ? raw.list
+        : []
+
+  return records.map(normalizeGroupOrderEvent)
+}
+
 export const orderApi = {
   listGroupOrders: (params: GroupOrderQuery) =>
     unwrap<PageResult<GroupOrderSummary>>(
@@ -168,7 +201,7 @@ export const orderApi = {
     http.post('/group-orders', data).then(normalizeCreatedOrder),
   getGroupOrderDetail: (id: number) => http.get(`/group-orders/${id}`).then(normalizeGroupOrderDetail),
   listGroupOrderEvents: (id: number) =>
-    unwrap<GroupOrderEvent[]>(http.get(`/group-orders/${id}/events`)),
+    http.get(`/group-orders/${id}/events`).then(normalizeGroupOrderEvents),
   joinGroupOrder: (id: number, data: JoinGroupOrderRequest) =>
     unwrap<JoinGroupOrderResponse>(http.post(`/group-orders/${id}/participants`, data)),
   lockGroupOrder: (id: number, data: LockGroupOrderRequest) =>

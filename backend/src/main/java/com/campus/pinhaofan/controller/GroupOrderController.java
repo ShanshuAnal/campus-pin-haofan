@@ -1,6 +1,7 @@
 package com.campus.pinhaofan.controller;
 
 import com.campus.pinhaofan.common.RedisConcurrencyGuard;
+import com.campus.pinhaofan.common.OperationLog;
 import com.campus.pinhaofan.common.Result;
 import com.campus.pinhaofan.dto.CancelGroupOrderRequest;
 import com.campus.pinhaofan.dto.CreateGroupOrderEventRequest;
@@ -63,6 +64,7 @@ public class GroupOrderController {
     }
 
     @PostMapping
+    @OperationLog("创建拼单")
     public Result<GroupOrderVO> createGroupOrder(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
@@ -83,6 +85,7 @@ public class GroupOrderController {
     }
 
     @PostMapping("/{orderId}/participants")
+    @OperationLog("加入拼单")
     public Result<JoinGroupOrderVO> joinGroupOrder(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
@@ -98,6 +101,7 @@ public class GroupOrderController {
     }
 
     @PostMapping("/{orderId}/lock")
+    @OperationLog("锁定拼单")
     public Result<LockGroupOrderVO> lockGroupOrder(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
@@ -113,6 +117,7 @@ public class GroupOrderController {
     }
 
     @PostMapping("/{orderId}/cancel")
+    @OperationLog("取消拼单")
     public Result<CancelGroupOrderVO> cancelGroupOrder(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
@@ -128,6 +133,7 @@ public class GroupOrderController {
     }
 
     @PostMapping("/{orderId}/events")
+    @OperationLog("新增拼单事件")
     public Result<GroupOrderEventVO> createGroupOrderEvent(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
@@ -149,6 +155,7 @@ public class GroupOrderController {
     }
 
     @PostMapping("/{orderId}/participants/{participantId}/payments/mark")
+    @OperationLog("标记付款")
     public Result<PaymentActionVO> markParticipantPaid(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
@@ -164,6 +171,7 @@ public class GroupOrderController {
     }
 
     @PostMapping("/{orderId}/participants/{participantId}/payments/confirm")
+    @OperationLog("确认付款")
     public Result<PaymentActionVO> confirmParticipantPayment(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
@@ -179,6 +187,7 @@ public class GroupOrderController {
     }
 
     @PutMapping("/{orderId}/pickup-assignee")
+    @OperationLog("指定取餐人")
     public Result<PickupAssigneeVO> assignPickupUser(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
@@ -194,6 +203,7 @@ public class GroupOrderController {
     }
 
     @PatchMapping("/{orderId}/pickup-status")
+    @OperationLog("更新取餐状态")
     public Result<PickupStatusUpdateVO> updatePickupStatus(
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,

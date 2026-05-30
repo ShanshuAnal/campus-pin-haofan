@@ -43,6 +43,20 @@ export const useOrderStore = defineStore('orders', () => {
 
   const filteredOrders = computed(() => orders.value)
 
+  const parseEventTime = (event: GroupOrderEvent) => {
+    if (!event.eventTime) return 0
+    const normalized = event.eventTime.includes('T') ? event.eventTime : event.eventTime.replace(' ', 'T')
+    const time = Date.parse(normalized)
+    return Number.isNaN(time) ? 0 : time
+  }
+
+  const sortEvents = (events: GroupOrderEvent[]) =>
+    [...events].sort((left, right) => {
+      const timeDiff = parseEventTime(right) - parseEventTime(left)
+      if (timeDiff !== 0) return timeDiff
+      return Number(right.id ?? 0) - Number(left.id ?? 0)
+    })
+
   const loadOrders = async (targetPage = pageNum.value) => {
     loading.value = true
     try {
@@ -91,10 +105,10 @@ export const useOrderStore = defineStore('orders', () => {
 
   const loadDetail = async (id: number) => {
     loading.value = true
+    currentEvents.value = []
     try {
       const detail = await orderApi.getGroupOrderDetail(id)
       currentDetail.value = detail
-      currentEvents.value = detail.recentEvents ?? []
     } finally {
       loading.value = false
     }
@@ -103,7 +117,7 @@ export const useOrderStore = defineStore('orders', () => {
   const loadEvents = async (id: number) => {
     eventsLoading.value = true
     try {
-      currentEvents.value = await orderApi.listGroupOrderEvents(id)
+      currentEvents.value = sortEvents(await orderApi.listGroupOrderEvents(id))
     } finally {
       eventsLoading.value = false
     }
