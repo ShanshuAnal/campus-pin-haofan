@@ -68,4 +68,6 @@ public interface GroupOrderService {
     DashboardSummaryVO getDashboardSummary(String authorization, String startTime, String endTime, String scope);
 
     GroupOrderTimeoutCheckVO expireGroupOrderIfTimeout(Long orderId);
+
+    List<GroupOrderTimeoutCheckVO> scanAndExpireTimeoutGroupOrders();
 }

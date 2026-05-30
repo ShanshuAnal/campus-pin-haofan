@@ -30,19 +30,13 @@ const getRemainingSeconds = (order: GroupOrderSummary) => {
   return deadline ? Math.floor((deadline - Date.now()) / 1000) : null
 }
 
-const isJoinable = (order: GroupOrderSummary) => {
-  if (terminalStatuses.includes(order.status)) {
-    return false
-  }
-  if (typeof order.joinable === 'boolean') {
-    return order.joinable
-  }
+const isCreatedPastDeadline = (order: GroupOrderSummary) => {
   const remainingSeconds = getRemainingSeconds(order)
-  return (
-    order.status === 'CREATED' &&
-    order.participantCount < order.maxParticipants &&
-    (remainingSeconds === null || remainingSeconds > 0)
-  )
+  return order.status === 'CREATED' && remainingSeconds !== null && remainingSeconds <= 0
+}
+
+const isJoinable = (order: GroupOrderSummary) => {
+  return order.status === 'CREATED' && !isCreatedPastDeadline(order) && order.joinable === true
 }
 
 const isEndingSoon = (order: GroupOrderSummary) => {
@@ -50,8 +44,14 @@ const isEndingSoon = (order: GroupOrderSummary) => {
   return isJoinable(order) && remainingSeconds !== null && remainingSeconds > 0 && remainingSeconds <= 1800
 }
 
+const defaultVisibleOrders = computed(() =>
+  orderStore.filteredOrders
+    .filter((order) => order.canViewDetail !== false && order.viewable !== false)
+    .filter((order) => Boolean(orderStore.status) || !terminalStatuses.includes(order.status))
+)
+
 const visibleOrders = computed(() => {
-  const orders = orderStore.filteredOrders.filter((order) => order.canViewDetail !== false && order.viewable !== false)
+  const orders = defaultVisibleOrders.value
   if (quickFilter.value === 'JOINABLE') {
     return orders.filter(isJoinable)
   }
@@ -64,14 +64,14 @@ const visibleOrders = computed(() => {
   return orders
 })
 
-const joinableCount = computed(() => orderStore.filteredOrders.filter(isJoinable).length)
-const endingSoonCount = computed(() => orderStore.filteredOrders.filter(isEndingSoon).length)
-const activeCount = computed(() => orderStore.filteredOrders.filter((order) => !terminalStatuses.includes(order.status)).length)
+const joinableCount = computed(() => defaultVisibleOrders.value.filter(isJoinable).length)
+const endingSoonCount = computed(() => defaultVisibleOrders.value.filter(isEndingSoon).length)
+const activeCount = computed(() => defaultVisibleOrders.value.filter((order) => !terminalStatuses.includes(order.status)).length)
 const savedAmount = computed(() =>
-  orderStore.filteredOrders.reduce((sum, order) => sum + Number(order.actualDiscountAmount ?? 0), 0)
+  defaultVisibleOrders.value.reduce((sum, order) => sum + Number(order.actualDiscountAmount ?? 0), 0)
 )
 const payableAmount = computed(() =>
-  orderStore.filteredOrders.reduce((sum, order) => sum + Number(order.payableTotalAmount ?? 0), 0)
+  defaultVisibleOrders.value.reduce((sum, order) => sum + Number(order.payableTotalAmount ?? 0), 0)
 )
 
 const resetFilters = async () => {
@@ -153,7 +153,7 @@ onMounted(() => orderStore.loadOrders())
           <ElOption label="已取餐" value="PICKED_UP" />
           <ElOption label="已完成" value="FINISHED" />
           <ElOption label="已取消" value="CANCELLED" />
-          <ElOption label="已过期" value="EXPIRED" />
+          <ElOption label="已超时关闭" value="EXPIRED" />
         </ElSelect>
         <ElSelect v-model="orderStore.orderType" clearable placeholder="类型" @change="orderStore.resetAndLoadOrders">
           <ElOption label="外卖拼单" value="TAKEOUT" />

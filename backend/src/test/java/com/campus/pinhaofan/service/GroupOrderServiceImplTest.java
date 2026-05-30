@@ -709,27 +709,49 @@ class GroupOrderServiceImplTest {
     }
 
     @Test
-    void cancelLockedOrderRejectsWhenParticipantAlreadyPaid() {
+    void cancelLockedOrderRefundsEscrowedAndConfirmedPayments() {
         User creator = user(CREATOR_ID, "20260001", "小何");
         GroupOrder order = baseOrder();
         order.setStatus(GroupOrderStatus.LOCKED.getValue());
+        OrderParticipant escrowed = participant(3002L, MEMBER_ID, "18.76");
+        escrowed.setPaymentStatus(PaymentStatus.ESCROWED.getValue());
+        OrderParticipant confirmed = participant(3003L, THIRD_USER_ID, "12.00");
+        confirmed.setPaymentStatus(PaymentStatus.CONFIRMED.getValue());
 
         when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
         when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
-        when(orderParticipantMapper.selectCount(any())).thenReturn(1L);
+        when(orderParticipantMapper.selectList(any())).thenReturn(List.of(escrowed, confirmed));
 
-        assertThatThrownBy(() -> groupOrderService.cancelGroupOrder(
+        CancelGroupOrderVO result = groupOrderService.cancelGroupOrder(
                 authorization(CREATOR_ID),
                 ORDER_ID,
-                cancelRequest("有人已付款")
-        )).isInstanceOfSatisfying(BusinessException.class, exception -> {
-            assertThat(exception.getCode()).isEqualTo(409);
-            assertThat(exception.getMessage()).isEqualTo("已有成员付款，不能取消拼单");
-        });
+                cancelRequest("有人已托管，取消并退款")
+        );
 
-        verify(groupOrderMapper, never()).updateById(any(GroupOrder.class));
-        verify(orderStatusLogMapper, never()).insert(any(OrderStatusLog.class));
-        verify(groupOrderEventMapper, never()).insert(any(GroupOrderEvent.class));
+        assertThat(result.getStatus()).isEqualTo("CANCELLED");
+        verify(groupOrderMapper).updateById(any(GroupOrder.class));
+
+        ArgumentCaptor<OrderStatusLog> logCaptor = ArgumentCaptor.forClass(OrderStatusLog.class);
+        verify(orderStatusLogMapper, times(3)).insert(logCaptor.capture());
+        assertThat(logCaptor.getAllValues())
+                .extracting(OrderStatusLog::getActionType)
+                .containsExactlyInAnyOrder("CANCEL_ORDER", "REFUND_PAYMENT", "REFUND_PAYMENT");
+        assertThat(logCaptor.getAllValues())
+                .extracting(OrderStatusLog::getTargetType)
+                .containsExactlyInAnyOrder("GROUP_ORDER", "PAYMENT", "PAYMENT");
+
+        ArgumentCaptor<OrderParticipant> participantCaptor = ArgumentCaptor.forClass(OrderParticipant.class);
+        verify(orderParticipantMapper, times(2)).updateById(participantCaptor.capture());
+        assertThat(participantCaptor.getAllValues())
+                .extracting(OrderParticipant::getPaymentStatus)
+                .containsExactlyInAnyOrder("REFUNDED", "REFUNDED");
+
+        verify(paymentRecordMapper, times(2)).insert(any(PaymentRecord.class));
+        ArgumentCaptor<GroupOrderEvent> eventCaptor = ArgumentCaptor.forClass(GroupOrderEvent.class);
+        verify(groupOrderEventMapper).insert(eventCaptor.capture());
+        assertThat(eventCaptor.getValue().getEventType()).isEqualTo("CANCELLED");
+        assertThat(eventCaptor.getValue().getOperatorId()).isEqualTo(CREATOR_ID);
+        assertThat(eventCaptor.getValue().getOperatorRole()).isEqualTo("CREATOR");
     }
 
     @Test
@@ -740,7 +762,7 @@ class GroupOrderServiceImplTest {
 
         when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
         when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
-        when(orderParticipantMapper.selectCount(any())).thenReturn(0L);
+        when(orderParticipantMapper.selectList(any())).thenReturn(List.of());
 
         CancelGroupOrderVO result = groupOrderService.cancelGroupOrder(
                 authorization(CREATOR_ID),
@@ -915,6 +937,45 @@ class GroupOrderServiceImplTest {
         assertThat(result.getExpired()).isFalse();
         assertThat(result.getStatus()).isEqualTo("LOCKED");
         assertThat(result.getMessage()).isEqualTo("超时关闭已被其他操作处理");
+        verify(orderStatusLogMapper, never()).insert(any(OrderStatusLog.class));
+        verify(groupOrderEventMapper, never()).insert(any(GroupOrderEvent.class));
+    }
+
+    @Test
+    void scanAndExpireTimeoutGroupOrdersExpiresCreatedTimeoutOrdersThroughHandler() {
+        GroupOrder timeoutOrder = baseOrder();
+        timeoutOrder.setDeadlineTime(LocalDateTime.now().minusMinutes(5));
+        when(groupOrderMapper.selectList(any())).thenReturn(List.of(timeoutOrder));
+        when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(timeoutOrder);
+        when(groupOrderMapper.update(any(GroupOrder.class), any())).thenReturn(1);
+
+        List<GroupOrderTimeoutCheckVO> result = groupOrderService.scanAndExpireTimeoutGroupOrders();
+
+        assertThat(result).hasSize(1);
+        assertThat(result.getFirst().getOrderId()).isEqualTo(ORDER_ID);
+        assertThat(result.getFirst().getExpired()).isTrue();
+        assertThat(result.getFirst().getStatus()).isEqualTo(GroupOrderStatus.EXPIRED.getValue());
+
+        ArgumentCaptor<LambdaQueryWrapper<GroupOrder>> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(groupOrderMapper).selectList(wrapperCaptor.capture());
+        assertThat(wrapperCaptor.getValue().getSqlSegment())
+                .contains("status")
+                .contains("deadline_time")
+                .containsIgnoringCase("ORDER BY deadline_time ASC,id ASC");
+        verify(groupOrderMapper).update(any(GroupOrder.class), any());
+        verify(orderStatusLogMapper).insert(any(OrderStatusLog.class));
+        verify(groupOrderEventMapper).insert(any(GroupOrderEvent.class));
+    }
+
+    @Test
+    void scanAndExpireTimeoutGroupOrdersReturnsEmptyWhenNoCandidate() {
+        when(groupOrderMapper.selectList(any())).thenReturn(List.of());
+
+        List<GroupOrderTimeoutCheckVO> result = groupOrderService.scanAndExpireTimeoutGroupOrders();
+
+        assertThat(result).isEmpty();
+        verify(groupOrderMapper, never()).selectById(any());
+        verify(groupOrderMapper, never()).update(any(GroupOrder.class), any());
         verify(orderStatusLogMapper, never()).insert(any(OrderStatusLog.class));
         verify(groupOrderEventMapper, never()).insert(any(GroupOrderEvent.class));
     }
@@ -1148,15 +1209,15 @@ class GroupOrderServiceImplTest {
         );
 
         assertThat(result.getParticipantId()).isEqualTo(3002L);
-        assertThat(result.getPaymentStatus()).isEqualTo("PAID");
+        assertThat(result.getPaymentStatus()).isEqualTo("ESCROWED");
         assertThat(result.getPaidMarkTime()).isNotNull();
         assertThat(result.getPaymentRecord().getId()).isEqualTo(5001L);
         assertThat(result.getPaymentRecord().getAmount()).isEqualByComparingTo("18.76");
-        assertThat(result.getPaymentRecord().getPaymentStatus()).isEqualTo("PAID");
+        assertThat(result.getPaymentRecord().getPaymentStatus()).isEqualTo("ESCROWED");
 
         ArgumentCaptor<OrderParticipant> participantCaptor = ArgumentCaptor.forClass(OrderParticipant.class);
         verify(orderParticipantMapper).updateById(participantCaptor.capture());
-        assertThat(participantCaptor.getValue().getPaymentStatus()).isEqualTo("PAID");
+        assertThat(participantCaptor.getValue().getPaymentStatus()).isEqualTo("ESCROWED");
 
         ArgumentCaptor<PaymentRecord> recordCaptor = ArgumentCaptor.forClass(PaymentRecord.class);
         verify(paymentRecordMapper).insert(recordCaptor.capture());
@@ -1220,7 +1281,7 @@ class GroupOrderServiceImplTest {
         GroupOrder order = baseOrder();
         order.setStatus(GroupOrderStatus.LOCKED.getValue());
         OrderParticipant participant = participant(3002L, MEMBER_ID, "18.76");
-        participant.setPaymentStatus(PaymentStatus.PAID.getValue());
+        participant.setPaymentStatus(PaymentStatus.ESCROWED.getValue());
 
         when(userMapper.selectById(MEMBER_ID)).thenReturn(member);
         when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
@@ -1246,7 +1307,7 @@ class GroupOrderServiceImplTest {
         GroupOrder order = baseOrder();
         order.setStatus(GroupOrderStatus.LOCKED.getValue());
         OrderParticipant participant = participant(3002L, MEMBER_ID, "18.76");
-        participant.setPaymentStatus(PaymentStatus.PAID.getValue());
+        participant.setPaymentStatus(PaymentStatus.ESCROWED.getValue());
         participant.setPaidMarkTime(LocalDateTime.now().minusMinutes(5));
 
         when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
@@ -1281,7 +1342,7 @@ class GroupOrderServiceImplTest {
         GroupOrder order = baseOrder();
         order.setStatus(GroupOrderStatus.LOCKED.getValue());
         OrderParticipant participant = participant(3002L, MEMBER_ID, "18.76");
-        participant.setPaymentStatus(PaymentStatus.PAID.getValue());
+        participant.setPaymentStatus(PaymentStatus.ESCROWED.getValue());
         participant.setPaidMarkTime(LocalDateTime.now().minusMinutes(5));
 
         when(userMapper.selectById(MEMBER_ID)).thenReturn(member);
@@ -1580,11 +1641,14 @@ class GroupOrderServiceImplTest {
         order.setStatus(GroupOrderStatus.PICKED_UP.getValue());
         order.setPickupUserId(MEMBER_ID);
         PickupRecord pickupRecord = pickupRecord(PickupStatus.PICKED_UP.getValue());
+        OrderParticipant confirmed = participant(3002L, MEMBER_ID, "18.76");
+        confirmed.setPaymentStatus(PaymentStatus.CONFIRMED.getValue());
 
         when(userMapper.selectById(CREATOR_ID)).thenReturn(creator);
         when(groupOrderMapper.selectById(ORDER_ID)).thenReturn(order);
         when(pickupRecordMapper.selectOne(any())).thenReturn(pickupRecord);
         when(userMapper.selectBatchIds(anyCollection())).thenReturn(List.of(creator, member));
+        when(orderParticipantMapper.selectList(any())).thenReturn(List.of(confirmed));
 
         PickupStatusUpdateRequest request = new PickupStatusUpdateRequest();
         request.setPickupStatus(PickupStatus.DISTRIBUTED.getValue());
@@ -1604,8 +1668,17 @@ class GroupOrderServiceImplTest {
         assertThat(orderCaptor.getValue().getStatus()).isEqualTo("FINISHED");
         assertThat(orderCaptor.getValue().getFinishTime()).isNotNull();
 
+        ArgumentCaptor<OrderParticipant> participantCaptor = ArgumentCaptor.forClass(OrderParticipant.class);
+        verify(orderParticipantMapper).updateById(participantCaptor.capture());
+        assertThat(participantCaptor.getValue().getPaymentStatus()).isEqualTo("SETTLED");
+
+        ArgumentCaptor<PaymentRecord> paymentCaptor = ArgumentCaptor.forClass(PaymentRecord.class);
+        verify(paymentRecordMapper).insert(paymentCaptor.capture());
+        assertThat(paymentCaptor.getValue().getPaymentStatus()).isEqualTo("SETTLED");
+        assertThat(paymentCaptor.getValue().getConfirmUserId()).isEqualTo(CREATOR_ID);
+
         ArgumentCaptor<OrderStatusLog> logCaptor = ArgumentCaptor.forClass(OrderStatusLog.class);
-        verify(orderStatusLogMapper, times(2)).insert(logCaptor.capture());
+        verify(orderStatusLogMapper, times(3)).insert(logCaptor.capture());
         List<OrderStatusLog> logs = logCaptor.getAllValues();
         assertThat(logs.get(0).getActionType()).isEqualTo("UPDATE_PICKUP_STATUS");
         assertThat(logs.get(0).getBeforeStatus()).isEqualTo("PICKED_UP");
@@ -1613,6 +1686,8 @@ class GroupOrderServiceImplTest {
         assertThat(logs.get(1).getActionType()).isEqualTo("UPDATE_ORDER_STATUS");
         assertThat(logs.get(1).getBeforeStatus()).isEqualTo("PICKED_UP");
         assertThat(logs.get(1).getAfterStatus()).isEqualTo("FINISHED");
+        assertThat(logs.get(2).getActionType()).isEqualTo("SETTLE_PAYMENT");
+        assertThat(logs.get(2).getTargetType()).isEqualTo("PAYMENT");
     }
 
     @Test
@@ -1718,7 +1793,7 @@ class GroupOrderServiceImplTest {
         User member = user(MEMBER_ID, "20260002", "小林");
         User creator = user(CREATOR_ID, "20260001", "小何");
         OrderParticipant participant = participant(3002L, MEMBER_ID, "18.76");
-        participant.setPaymentStatus(PaymentStatus.PAID.getValue());
+        participant.setPaymentStatus(PaymentStatus.ESCROWED.getValue());
 
         GroupOrder order = baseOrder();
         order.setCreatorId(CREATOR_ID);
@@ -1747,7 +1822,7 @@ class GroupOrderServiceImplTest {
         assertThat(result.getRecords()).hasSize(1);
         assertThat(result.getRecords().getFirst().getMyRole()).isEqualTo("PARTICIPANT");
         assertThat(result.getRecords().getFirst().getMyParticipantId()).isEqualTo(3002L);
-        assertThat(result.getRecords().getFirst().getMyPaymentStatus()).isEqualTo("PAID");
+        assertThat(result.getRecords().getFirst().getMyPaymentStatus()).isEqualTo("ESCROWED");
         assertThat(result.getRecords().getFirst().getMyPayableAmount()).isEqualByComparingTo("18.76");
 
         ArgumentCaptor<LambdaQueryWrapper<GroupOrder>> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
@@ -1939,7 +2014,7 @@ class GroupOrderServiceImplTest {
 
         OrderParticipant paid = participant(3002L, MEMBER_ID, "20.00");
         paid.setGroupOrderId(2001L);
-        paid.setPaymentStatus(PaymentStatus.PAID.getValue());
+        paid.setPaymentStatus(PaymentStatus.ESCROWED.getValue());
         OrderParticipant confirmed = participant(3003L, CREATOR_ID, "30.00");
         confirmed.setGroupOrderId(2002L);
         confirmed.setPaymentStatus(PaymentStatus.CONFIRMED.getValue());

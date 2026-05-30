@@ -90,6 +90,7 @@ public class GroupOrderServiceImpl implements GroupOrderService {
     private static final String DISABLED_STATUS = "DISABLED";
     private static final String TARGET_TYPE_GROUP_ORDER = "GROUP_ORDER";
     private static final String TARGET_TYPE_PICKUP_RECORD = "PICKUP_RECORD";
+    private static final String TARGET_TYPE_PAYMENT = "PAYMENT";
     private static final String ACTION_TYPE_CREATE_ORDER = "CREATE_ORDER";
     private static final String ACTION_TYPE_LOCK_ORDER = "LOCK_ORDER";
     private static final String ACTION_TYPE_CANCEL_ORDER = "CANCEL_ORDER";
@@ -97,6 +98,8 @@ public class GroupOrderServiceImpl implements GroupOrderService {
     private static final String ACTION_TYPE_ASSIGN_PICKUP = "ASSIGN_PICKUP";
     private static final String ACTION_TYPE_UPDATE_PICKUP_STATUS = "UPDATE_PICKUP_STATUS";
     private static final String ACTION_TYPE_UPDATE_ORDER_STATUS = "UPDATE_ORDER_STATUS";
+    private static final String ACTION_TYPE_SETTLE_PAYMENT = "SETTLE_PAYMENT";
+    private static final String ACTION_TYPE_REFUND_PAYMENT = "REFUND_PAYMENT";
     private static final String MY_SCOPE_CREATED_BY_ME = "CREATED_BY_ME";
     private static final String MY_SCOPE_JOINED_BY_ME = "JOINED_BY_ME";
     private static final String MY_SCOPE_PICKUP_BY_ME = "PICKUP_BY_ME";
@@ -137,7 +140,8 @@ public class GroupOrderServiceImpl implements GroupOrderService {
             GroupOrderStatus.LOCKED.getValue(),
             GroupOrderStatus.ORDERED.getValue(),
             GroupOrderStatus.DELIVERING.getValue(),
-            GroupOrderStatus.ARRIVED.getValue()
+            GroupOrderStatus.ARRIVED.getValue(),
+            GroupOrderStatus.PICKED_UP.getValue()
     );
 
     private final AuthTokenUtil authTokenUtil;
@@ -469,6 +473,7 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                 GroupOrderStatus.CANCELLED.getValue(),
                 now
         );
+        refundEscrowedAndConfirmedPayments(orderId, now, cancelReason);
 
         return new CancelGroupOrderVO(
                 order.getId(),
@@ -580,7 +585,7 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         if (PaymentStatus.CONFIRMED.getValue().equals(participant.getPaymentStatus())) {
             throw new BusinessException(ResultCode.CONFLICT.getCode(), "付款已确认，不能重复标记");
         }
-        if (PaymentStatus.PAID.getValue().equals(participant.getPaymentStatus())) {
+        if (PaymentStatus.ESCROWED.getValue().equals(participant.getPaymentStatus())) {
             throw new BusinessException(ResultCode.CONFLICT.getCode(), "已标记付款，不能重复标记");
         }
         if (!PaymentStatus.UNPAID.getValue().equals(participant.getPaymentStatus())) {
@@ -588,14 +593,14 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         }
 
         LocalDateTime now = LocalDateTime.now();
-        participant.setPaymentStatus(PaymentStatus.PAID.getValue());
+        participant.setPaymentStatus(PaymentStatus.ESCROWED.getValue());
         participant.setPaidMarkTime(now);
         orderParticipantMapper.updateById(participant);
 
         PaymentRecord paymentRecord = createPaymentRecord(
                 orderId,
                 participant,
-                PaymentStatus.PAID.getValue(),
+                PaymentStatus.ESCROWED.getValue(),
                 now,
                 null,
                 null,
@@ -624,7 +629,7 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         if (PaymentStatus.CONFIRMED.getValue().equals(participant.getPaymentStatus())) {
             throw new BusinessException(ResultCode.CONFLICT.getCode(), "付款已确认");
         }
-        if (!PaymentStatus.PAID.getValue().equals(participant.getPaymentStatus())) {
+        if (!PaymentStatus.ESCROWED.getValue().equals(participant.getPaymentStatus())) {
             throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "成员尚未标记付款");
         }
 
@@ -813,6 +818,9 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                     targetOrderStatus,
                     "取餐状态同步推进拼单状态"
             );
+        }
+        if (GroupOrderStatus.FINISHED.getValue().equals(targetOrderStatus)) {
+            settleConfirmedPayments(orderId, now, order.getCreatorId(), "拼单完成，模拟结算");
         }
 
         Map<Long, User> users = loadUsersForPickup(order, pickupRecord);
@@ -1030,6 +1038,7 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                 GroupOrderStatus.EXPIRED.getValue(),
                 now
         );
+        refundEscrowedAndConfirmedPayments(orderId, now, expireReason);
         log.info(
                 "Group order expired successfully. orderId={}, deadlineTime={}, expiredTime={}",
                 orderId,
@@ -1046,6 +1055,32 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                 DateTimeUtil.format(order.getDeadlineTime()),
                 false
         );
+    }
+
+    @Override
+    public List<GroupOrderTimeoutCheckVO> scanAndExpireTimeoutGroupOrders() {
+        LocalDateTime now = LocalDateTime.now();
+        List<GroupOrder> timeoutOrders = groupOrderMapper.selectList(
+                new LambdaQueryWrapper<GroupOrder>()
+                        .eq(GroupOrder::getStatus, GroupOrderStatus.CREATED.getValue())
+                        .le(GroupOrder::getDeadlineTime, now)
+                        .orderByAsc(GroupOrder::getDeadlineTime)
+                        .orderByAsc(GroupOrder::getId)
+        );
+        if (timeoutOrders == null || timeoutOrders.isEmpty()) {
+            log.info("Timeout compensation scan found no expired CREATED orders. scanTime={}", now);
+            return Collections.emptyList();
+        }
+
+        log.info(
+                "Timeout compensation scan found candidates. scanTime={}, count={}",
+                now,
+                timeoutOrders.size()
+        );
+        return timeoutOrders.stream()
+                .map(GroupOrder::getId)
+                .map(this::expireGroupOrderIfTimeout)
+                .toList();
     }
 
     private List<OrderParticipant> loadParticipantsByUser(Long userId) {
@@ -1207,7 +1242,7 @@ public class GroupOrderServiceImpl implements GroupOrderService {
                 .setScale(2, RoundingMode.HALF_UP);
 
         long paidParticipantCount = participants.stream()
-                .filter(participant -> PaymentStatus.PAID.getValue().equals(participant.getPaymentStatus()))
+                .filter(participant -> PaymentStatus.ESCROWED.getValue().equals(participant.getPaymentStatus()))
                 .count();
         long confirmedParticipantCount = participants.stream()
                 .filter(participant -> PaymentStatus.CONFIRMED.getValue().equals(participant.getPaymentStatus()))
@@ -1598,9 +1633,6 @@ public class GroupOrderServiceImpl implements GroupOrderService {
             return;
         }
         if (GroupOrderStatus.LOCKED.getValue().equals(order.getStatus())) {
-            if (hasPaidParticipant(order.getId())) {
-                throw new BusinessException(ResultCode.CONFLICT.getCode(), "已有成员付款，不能取消拼单");
-            }
             return;
         }
         if (GroupOrderStatus.ORDERED.getValue().equals(order.getStatus())
@@ -1615,15 +1647,6 @@ public class GroupOrderServiceImpl implements GroupOrderService {
         throw new BusinessException(ResultCode.CONFLICT.getCode(), "当前状态不能取消拼单");
     }
 
-    private boolean hasPaidParticipant(Long orderId) {
-        Long count = orderParticipantMapper.selectCount(
-                new LambdaQueryWrapper<OrderParticipant>()
-                        .eq(OrderParticipant::getGroupOrderId, orderId)
-                        .ne(OrderParticipant::getPaymentStatus, PaymentStatus.UNPAID.getValue())
-        );
-        return count != null && count > 0;
-    }
-
     private BigDecimal calculateActualDiscountAmount(GroupOrder order, BigDecimal originalTotalAmount) {
         BigDecimal discountThresholdAmount = order.getDiscountThresholdAmount();
         BigDecimal discountAmount = amount(order.getDiscountAmount());
@@ -1634,6 +1657,77 @@ public class GroupOrderServiceImpl implements GroupOrderService {
             throw new BusinessException(ResultCode.BAD_REQUEST.getCode(), "优惠金额不能大于原始总金额");
         }
         return discountAmount;
+    }
+
+    private void settleConfirmedPayments(Long orderId, LocalDateTime now, Long settlementReceiverId, String remark) {
+        transitionPaymentStatuses(
+                orderId,
+                remark,
+                List.of(PaymentStatus.CONFIRMED.getValue()),
+                PaymentStatus.SETTLED.getValue(),
+                ACTION_TYPE_SETTLE_PAYMENT,
+                settlementReceiverId,
+                now
+        );
+    }
+
+    private void refundEscrowedAndConfirmedPayments(Long orderId, LocalDateTime now, String remark) {
+        transitionPaymentStatuses(
+                orderId,
+                remark,
+                List.of(PaymentStatus.ESCROWED.getValue(), PaymentStatus.CONFIRMED.getValue()),
+                PaymentStatus.REFUNDED.getValue(),
+                ACTION_TYPE_REFUND_PAYMENT,
+                SYSTEM_OPERATOR_ID,
+                now
+        );
+    }
+
+    private void transitionPaymentStatuses(
+            Long orderId,
+            String remark,
+            List<String> sourceStatuses,
+            String targetStatus,
+            String actionType,
+            Long confirmUserId,
+            LocalDateTime confirmTime) {
+        if (sourceStatuses == null || sourceStatuses.isEmpty()) {
+            return;
+        }
+        List<OrderParticipant> participants = orderParticipantMapper.selectList(
+                new LambdaQueryWrapper<OrderParticipant>()
+                        .eq(OrderParticipant::getGroupOrderId, orderId)
+                        .in(OrderParticipant::getPaymentStatus, sourceStatuses)
+        );
+        if (participants == null || participants.isEmpty()) {
+            return;
+        }
+        for (OrderParticipant participant : participants) {
+            String beforeStatus = participant.getPaymentStatus();
+            participant.setPaymentStatus(targetStatus);
+            orderParticipantMapper.updateById(participant);
+
+            PaymentRecord paymentRecord = createPaymentRecord(
+                    orderId,
+                    participant,
+                    targetStatus,
+                    participant.getPaidMarkTime(),
+                    confirmUserId,
+                    confirmTime,
+                    remark
+            );
+            paymentRecordMapper.insert(paymentRecord);
+            insertStatusLog(
+                    orderId,
+                    SYSTEM_OPERATOR_ID,
+                    TARGET_TYPE_PAYMENT,
+                    participant.getId(),
+                    actionType,
+                    beforeStatus,
+                    targetStatus,
+                    remark
+            );
+        }
     }
 
     private BigDecimal calculateDiscountShareAmount(

@@ -18,14 +18,16 @@ export const orderStatusText: Record<GroupOrderStatus, string> = {
   PICKED_UP: '已取餐',
   FINISHED: '已完成',
   CANCELLED: '已取消',
-  EXPIRED: '已过期'
+  EXPIRED: '已超时关闭'
 }
 
 export const paymentStatusText: Record<PaymentStatus, string> = {
-  UNPAID: '未付款',
-  PAID: '已标记',
-  CONFIRMED: '已确认',
-  REFUNDED: '已退款'
+  UNPAID: '待模拟支付',
+  PAID: '已模拟支付',
+  ESCROWED: '托管中',
+  CONFIRMED: '发起人已确认',
+  SETTLED: '已结算给发起人',
+  REFUNDED: '已模拟退款'
 }
 
 export const pickupStatusText: Record<PickupStatus, string> = {

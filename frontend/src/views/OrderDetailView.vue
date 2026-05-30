@@ -135,11 +135,14 @@ const discountPercent = computed(() => {
   if (discountThreshold.value <= 0) return 100
   return Math.min(Math.round((Number(order.value?.originalTotalAmount ?? 0) / discountThreshold.value) * 100), 100)
 })
+const simulatedPaidStatuses = ['PAID', 'ESCROWED', 'CONFIRMED', 'SETTLED']
+const confirmedPaymentStatuses = ['CONFIRMED', 'SETTLED']
+const confirmablePaymentStatuses = ['PAID', 'ESCROWED']
 const paidCount = computed(() =>
-  detail.value?.participants.filter((participant) => ['PAID', 'CONFIRMED'].includes(participant.paymentStatus)).length ?? 0
+  detail.value?.participants.filter((participant) => simulatedPaidStatuses.includes(participant.paymentStatus)).length ?? 0
 )
 const confirmedCount = computed(() =>
-  detail.value?.participants.filter((participant) => participant.paymentStatus === 'CONFIRMED').length ?? 0
+  detail.value?.participants.filter((participant) => confirmedPaymentStatuses.includes(participant.paymentStatus)).length ?? 0
 )
 const payableTotal = computed(() => Number(order.value?.payableTotalAmount ?? 0))
 const actualDiscount = computed(() => Number(order.value?.actualDiscountAmount ?? 0))
@@ -245,7 +248,7 @@ const flowSteps = computed(() => {
     creatorStep,
     { title: '加入', description: `${detail.value?.participants.length ?? 0}/${order.value?.maxParticipants ?? 0} 人` },
     { title: '锁单', description: order.value?.lockedTime ? '已生成分摊' : '等待锁单' },
-    { title: '付款', description: `${paidCount.value}/${detail.value?.participants.length ?? 0} 已标记` },
+    { title: '模拟支付', description: `${paidCount.value}/${detail.value?.participants.length ?? 0} 已托管` },
     { title: '取餐', description: pickupStatus.value ? pickupStatusText[pickupStatus.value] : '待指定' },
     { title: '完成', description: order.value?.status === 'FINISHED' ? '已完成' : '未完成' }
   ]
@@ -257,16 +260,16 @@ const terminalNotice = computed(() => {
   if (!order.value) return null
   if (order.value.status === 'FINISHED') {
     const time = terminalTimeText('完成时间', order.value.finishTime)
-    return { type: 'success', title: '拼单已完成', content: `餐品已分发，付款和取餐主流程已结束。${time}。` }
+    return { type: 'success', title: '拼单已完成', content: `餐品已分发，模拟支付和取餐主流程已结束。${time}。` }
   }
   if (order.value.status === 'CANCELLED') {
     const reason = order.value.cancelReason || '发起人已取消该拼单'
     const time = terminalTimeText('取消时间', order.value.cancelTime)
-    return { type: 'warning', title: '拼单已取消', content: `${reason}。${time}。不能继续加入、锁单、付款或推进取餐。` }
+    return { type: 'warning', title: '拼单已取消', content: `${reason}。${time}。不能继续加入、锁单、模拟支付或推进取餐。` }
   }
   if (order.value.status === 'EXPIRED') {
     const time = terminalTimeText('关闭时间', order.value.expiredTime)
-    return { type: 'info', title: '已超时关闭', content: `${order.value.expireReason || '系统因超过截止时间关闭该拼单'}。${time}。不能继续加入、锁单、付款或推进取餐。` }
+    return { type: 'info', title: '已超时关闭', content: `${order.value.expireReason || '系统因超过截止时间关闭该拼单'}。${time}。不能继续加入、锁单、模拟支付或推进取餐。` }
   }
   return null
 })
@@ -286,11 +289,11 @@ const nextActionTitle = computed(() => {
 
 const nextActionText = computed(() => {
   if (!order.value) return ''
-  if (order.value.status === 'EXPIRED') return '已超时关闭，不能继续加入、锁单、付款或推进取餐。'
-  if (order.value.status === 'CANCELLED') return '已取消，不能继续加入、锁单、付款或推进取餐。'
-  if (order.value.status === 'FINISHED') return '已完成，付款和取餐主流程已结束。'
-  if (isCreatedPastDeadline.value) return '已超过截止时间，等待系统关闭，不能继续加入、锁单、取消、付款或推进取餐。'
-  return '可查看成员、付款、取餐和事件进展。'
+  if (order.value.status === 'EXPIRED') return '已超时关闭，不能继续加入、锁单、模拟支付或推进取餐。'
+  if (order.value.status === 'CANCELLED') return '已取消，不能继续加入、锁单、模拟支付或推进取餐。'
+  if (order.value.status === 'FINISHED') return '已完成，模拟支付和取餐主流程已结束。'
+  if (isCreatedPastDeadline.value) return '已超过截止时间，等待系统关闭，不能继续加入、锁单、取消、模拟支付或推进取餐。'
+  return '可查看成员、模拟支付、取餐和事件进展。'
 })
 
 const eventTypeText: Record<string, string> = {
@@ -305,7 +308,7 @@ const eventTypeText: Record<string, string> = {
   PICKUP_EXCEPTION: '取餐异常',
   ITEM_MISSING: '缺餐',
   CONTACT_FAILED: '联系失败',
-  PAYMENT_DISPUTE: '付款争议',
+  PAYMENT_DISPUTE: '模拟支付争议',
   NOTE: '备注'
 }
 
@@ -372,14 +375,14 @@ const canMarkPayment = (participant: Participant) => {
   return Boolean(
     participant.user.id === currentUserId.value &&
       participant.paymentStatus === 'UNPAID' &&
-      ['LOCKED', 'ORDERED', 'DELIVERING', 'ARRIVED'].includes(order.value?.status ?? '')
+      ['LOCKED', 'ORDERED', 'DELIVERING', 'ARRIVED', 'PICKED_UP'].includes(order.value?.status ?? '')
   )
 }
 
 const canConfirmPayment = (participant: Participant) => {
   if (isOperationClosed.value) return false
   if (typeof permissions.value.canConfirmPayment === 'boolean' && !permissions.value.canConfirmPayment) return false
-  return Boolean(isCreator.value && participant.paymentStatus === 'PAID')
+  return Boolean(isCreator.value && confirmablePaymentStatuses.includes(participant.paymentStatus))
 }
 
 const isWaitingForLockToPay = (participant: Participant) =>
@@ -409,7 +412,7 @@ const runOrderAction = async (key: string, successMessage: string, action: () =>
     ElMessage.success(successMessage)
     await refreshCurrentDetail()
   } catch {
-    // 业务错误由 axios 统一展示，例如权限不足、重复付款、非法状态或取餐状态跳跃。
+    // 业务错误由 axios 统一展示，例如权限不足、重复模拟支付、非法状态或取餐状态跳跃。
   } finally {
     operationLoading.value = ''
   }
@@ -440,7 +443,7 @@ const cancelOrder = async () => {
     cancelReason.value = ''
     await refreshCurrentDetail()
   } catch {
-    // 业务错误由 axios 统一展示，例如非发起人取消、已付款不可取消、履约中不可取消。
+    // 业务错误由 axios 统一展示，例如非发起人取消、已有模拟托管不可取消、履约中不可取消。
   } finally {
     operationLoading.value = ''
   }
@@ -448,18 +451,18 @@ const cancelOrder = async () => {
 
 const markPayment = (participant: Participant) => {
   if (!order.value) return
-  return runOrderAction(`mark-${participant.id}`, '已标记付款', () =>
+  return runOrderAction(`mark-${participant.id}`, '已提交模拟支付，进入模拟托管', () =>
     orderStore.markPayment(order.value!.id, participant.id, {
-      remark: '前端标记已付款'
+      remark: '前端提交模拟支付'
     })
   )
 }
 
 const confirmPayment = (participant: Participant) => {
   if (!order.value) return
-  return runOrderAction(`confirm-${participant.id}`, '已确认付款', () =>
+  return runOrderAction(`confirm-${participant.id}`, '已确认收款', () =>
     orderStore.confirmPayment(order.value!.id, participant.id, {
-      remark: '发起人确认付款'
+      remark: '发起人确认收款'
     })
   )
 }
@@ -641,7 +644,7 @@ watch(
                 <strong>{{ formatMoney(payableTotal) }}</strong>
               </div>
               <div class="amount-tile amount-tile--orange">
-                <span>确认付款</span>
+                <span>确认收款</span>
                 <strong>{{ confirmedCount }}/{{ detail.participants.length }}</strong>
               </div>
             </div>
@@ -650,6 +653,15 @@ watch(
               <ElProgress :percentage="discountPercent" :stroke-width="10" color="#42b883" />
             </div>
           </section>
+
+          <ElAlert
+            class="payment-sim-alert"
+            type="info"
+            title="本系统不接入真实支付，仅模拟拼单资金状态。"
+            description="支付到模拟托管、确认收款、模拟结算和模拟退款均为课堂演示状态，不产生真实资金流。"
+            show-icon
+            :closable="false"
+          />
 
           <section class="detail-section">
             <div class="section-title">
@@ -685,7 +697,7 @@ watch(
                     :loading="operationLoading === `mark-${participant.id}`"
                     @click="markPayment(participant)"
                   >
-                    标记付款
+                    支付到模拟托管
                   </ElButton>
                   <ElButton
                     v-if="canConfirmPayment(participant)"
@@ -694,9 +706,9 @@ watch(
                     :loading="operationLoading === `confirm-${participant.id}`"
                     @click="confirmPayment(participant)"
                   >
-                    确认付款
+                    确认收款
                   </ElButton>
-                  <ElTooltip v-if="isWaitingForLockToPay(participant)" content="锁单生成应付金额后才能标记付款" placement="top">
+                  <ElTooltip v-if="isWaitingForLockToPay(participant)" content="锁单生成应付金额后才能提交模拟支付" placement="top">
                     <ElButton size="small" disabled>待锁单</ElButton>
                   </ElTooltip>
                   <span v-if="!canMarkPayment(participant) && !canConfirmPayment(participant) && !isWaitingForLockToPay(participant)" class="muted-text">
@@ -872,7 +884,7 @@ watch(
         <div class="cancel-dialog">
           <ElAlert
             type="warning"
-            title="取消后不能继续加入、锁单、付款或推进取餐"
+            title="取消后不能继续加入、锁单、模拟支付或推进取餐"
             show-icon
             :closable="false"
           />
@@ -972,6 +984,10 @@ watch(
 }
 
 .terminal-alert {
+  border-radius: 14px;
+}
+
+.payment-sim-alert {
   border-radius: 14px;
 }
 

@@ -6,8 +6,9 @@ import lombok.Getter;
 public enum PaymentStatus {
 
     UNPAID("UNPAID"),
-    PAID("PAID"),
+    ESCROWED("ESCROWED"),
     CONFIRMED("CONFIRMED"),
+    SETTLED("SETTLED"),
     REFUNDED("REFUNDED");
 
     private final String value;

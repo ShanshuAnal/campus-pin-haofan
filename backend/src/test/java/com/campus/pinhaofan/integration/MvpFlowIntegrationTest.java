@@ -145,11 +145,11 @@ class MvpFlowIntegrationTest {
         JsonNode paidB = ok(postApi("/api/group-orders/" + orderId + "/participants/" + participantBId + "/payments/mark",
                 accessB,
                 "{\"remark\":\"B 已付款\"}"));
-        assertThat(paidB.path("paymentStatus").asText()).isEqualTo("PAID");
+        assertThat(paidB.path("paymentStatus").asText()).isEqualTo("ESCROWED");
         JsonNode paidC = ok(postApi("/api/group-orders/" + orderId + "/participants/" + participantCId + "/payments/mark",
                 accessC,
                 "{\"remark\":\"C 已付款\"}"));
-        assertThat(paidC.path("paymentStatus").asText()).isEqualTo("PAID");
+        assertThat(paidC.path("paymentStatus").asText()).isEqualTo("ESCROWED");
 
         JsonNode confirmedB = ok(postApi("/api/group-orders/" + orderId + "/participants/" + participantBId + "/payments/confirm",
                 accessA,

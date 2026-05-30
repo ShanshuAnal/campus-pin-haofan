@@ -11,7 +11,7 @@ export type GroupOrderStatus =
   | 'CANCELLED'
   | 'EXPIRED'
 
-export type PaymentStatus = 'UNPAID' | 'PAID' | 'CONFIRMED' | 'REFUNDED'
+export type PaymentStatus = 'UNPAID' | 'PAID' | 'ESCROWED' | 'CONFIRMED' | 'SETTLED' | 'REFUNDED'
 
 export type PickupStatus =
   | 'WAITING_ORDER'

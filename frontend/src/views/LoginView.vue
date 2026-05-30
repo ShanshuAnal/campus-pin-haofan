@@ -55,7 +55,7 @@ const registerAndLogin = async () => {
       <div class="login-copy">
         <span class="brand__mark">拼</span>
         <h1>校园拼好饭</h1>
-        <p>围绕发起拼单、成员加入、金额分摊、付款标记和取餐协同的校园拼单工具。</p>
+        <p>围绕发起拼单、成员加入、金额分摊、模拟支付和取餐协同的校园拼单工具。</p>
       </div>
       <ElForm class="login-form" :model="form" label-position="top" @submit.prevent="submit">
         <ElFormItem label="账号">

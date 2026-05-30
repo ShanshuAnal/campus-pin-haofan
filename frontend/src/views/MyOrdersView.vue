@@ -23,7 +23,7 @@ const roleText = {
 const scopeTabs: Array<{ label: string; value: MyGroupOrderScope }> = [
   { label: '我发起的拼单', value: 'CREATED_BY_ME' },
   { label: '我参与的拼单', value: 'JOINED_BY_ME' },
-  { label: '待付款拼单', value: 'PENDING_PAYMENT' },
+  { label: '待模拟支付拼单', value: 'PENDING_PAYMENT' },
   { label: '历史拼单', value: 'HISTORY' }
 ]
 
@@ -62,7 +62,7 @@ onMounted(() => loadMyOrders())
     <div class="page-header">
       <div>
         <h1>我的拼单</h1>
-        <p>汇总我发起、参与和负责取餐的拼单，便于跟进付款与取餐状态。</p>
+        <p>汇总我发起、参与和负责取餐的拼单，便于跟进模拟支付与取餐状态。</p>
       </div>
     </div>
 
@@ -87,7 +87,7 @@ onMounted(() => loadMyOrders())
         <ElTableColumn label="我的应付" width="120">
           <template #default="{ row }">{{ formatMoney(row.myPayableAmount) }}</template>
         </ElTableColumn>
-        <ElTableColumn label="付款" width="120">
+        <ElTableColumn label="模拟支付" width="140">
           <template #default="{ row }">
             {{ formatPayment(row) }}
           </template>

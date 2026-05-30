@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/internal/group-orders")
@@ -21,5 +23,11 @@ public class InternalGroupOrderController {
     @OperationLog("手动触发超时关闭")
     public Result<GroupOrderTimeoutCheckVO> expireCheck(@PathVariable Long orderId) {
         return Result.success(groupOrderService.expireGroupOrderIfTimeout(orderId));
+    }
+
+    @PostMapping("/expire-scan")
+    @OperationLog("手动触发超时补偿扫描")
+    public Result<List<GroupOrderTimeoutCheckVO>> expireScan() {
+        return Result.success(groupOrderService.scanAndExpireTimeoutGroupOrders());
     }
 }

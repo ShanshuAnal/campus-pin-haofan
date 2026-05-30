@@ -48,6 +48,10 @@ const remainingSeconds = computed(() => {
   }
   return Math.floor((parsedDeadline.value - Date.now()) / 1000)
 })
+const isTerminal = computed(() => terminalStatuses.includes(props.order.status))
+const isCreatedPastDeadline = computed(() =>
+  props.order.status === 'CREATED' && remainingSeconds.value !== null && remainingSeconds.value <= 0
+)
 const deadlineText = computed(() => {
   const seconds = remainingSeconds.value
   if (props.order.status === 'EXPIRED') return '已超时关闭'
@@ -61,24 +65,15 @@ const deadlineText = computed(() => {
   return `${minutes}分钟`
 })
 const canJoin = computed(() => {
-  if (terminalStatuses.includes(props.order.status)) {
-    return false
-  }
-  if (typeof props.order.joinable === 'boolean') {
-    return props.order.joinable
-  }
-  return (
-    props.order.status === 'CREATED' &&
-    props.order.participantCount < props.order.maxParticipants &&
-    (remainingSeconds.value === null || remainingSeconds.value > 0)
-  )
+  return props.order.status === 'CREATED' && !isCreatedPastDeadline.value && props.order.joinable === true
 })
 const canViewDetail = computed(() => props.order.canViewDetail !== false && props.order.viewable !== false)
 const coverClass = computed(() => `order-card__cover order-card__cover--${props.order.orderType.toLowerCase()}`)
 const cardTone = computed(() => {
-  if (terminalStatuses.includes(props.order.status)) return 'terminal'
+  if (isTerminal.value || isCreatedPastDeadline.value) return 'terminal'
   return canJoin.value ? 'joinable' : 'muted'
 })
+const blockedActionText = computed(() => (isTerminal.value || isCreatedPastDeadline.value ? '已关闭' : '不可查看'))
 const noticeText = computed(() => {
   if (props.order.status === 'CANCELLED') {
     const reason = props.order.cancelReason || props.order.lastEventSummary || '发起人已取消该拼单'
@@ -110,7 +105,8 @@ const goDetail = () => {
     <div class="order-card__body">
       <div class="order-card__title">
         <h3>{{ props.order.title }}</h3>
-        <StatusTag :status="props.order.status" />
+        <ElTag v-if="isCreatedPastDeadline" type="warning" effect="light" round>已截止待处理</ElTag>
+        <StatusTag v-else :status="props.order.status" />
       </div>
 
       <div class="order-card__meta">
@@ -146,7 +142,7 @@ const goDetail = () => {
         </div>
         <ElButton v-if="canJoin" type="primary" :icon="CirclePlus" :disabled="!canViewDetail" @click="goDetail">加入拼单</ElButton>
         <ElTooltip v-else-if="!canViewDetail" content="你无权查看该拼单详情" placement="top">
-          <ElButton :icon="View" disabled>不可查看</ElButton>
+          <ElButton :icon="View" disabled>{{ blockedActionText }}</ElButton>
         </ElTooltip>
         <ElButton v-else :icon="View" @click="goDetail">查看详情</ElButton>
       </div>
